@@ -1869,7 +1869,7 @@ function AdminQueue({ reports, venues, onAccept, onReject, onBack }) {
 
 // ─── AUTH SCREENS ────────────────────────────────────────
 function AuthScreen({ onDone }) {
-  const [mode, setMode] = useState('signup') // signup | login
+  const [mode, setMode] = useState('signup') // signup | login | reset
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [username, setUsername] = useState('')
@@ -1882,6 +1882,15 @@ function AuthScreen({ onDone }) {
     setError('')
     setNotice('')
     try {
+      if (mode === 'reset') {
+        // Email a recovery link; returning to the app fires PASSWORD_RECOVERY.
+        const redirectTo = (typeof window !== 'undefined' && window.location?.origin) || undefined
+        const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
+        if (error) throw error
+        setNotice('If that email has an account, a reset link is on its way. Open it on this device.')
+        setLoading(false)
+        return
+      }
       if (mode === 'signup') {
         const { data, error } = await supabase.auth.signUp({
           email,
@@ -1910,6 +1919,8 @@ function AuthScreen({ onDone }) {
     setLoading(false)
   }
 
+  const switchMode = (m) => { setMode(m); setError(''); setNotice('') }
+
   const inputStyle = {
     display: 'block', width: '100%', padding: '13px 14px',
     border: `1.5px solid rgba(255,255,255,0.14)`, borderRadius: 13,
@@ -1931,32 +1942,101 @@ function AuthScreen({ onDone }) {
         </div>
 
         <div style={{ fontSize: 20, fontWeight: 700, color: '#fff', letterSpacing: '-.4px', marginBottom: 4 }}>
-          {mode === 'signup' ? 'Create account' : 'Welcome back'}
+          {mode === 'signup' ? 'Create account' : mode === 'reset' ? 'Reset password' : 'Welcome back'}
         </div>
         <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', marginBottom: 22 }}>
-          {mode === 'signup' ? 'Free forever. Start collecting.' : 'Sign in to your collection.'}
+          {mode === 'signup' ? 'Free forever. Start collecting.' : mode === 'reset' ? "We'll email you a link to set a new one." : 'Sign in to your collection.'}
         </div>
 
         {mode === 'signup' && (
           <input value={username} onChange={e => setUsername(e.target.value)} placeholder="Username" style={inputStyle} />
         )}
         <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" type="email" style={inputStyle} />
-        <input value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" type="password" style={inputStyle} />
+        {mode !== 'reset' && (
+          <input value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" type="password" style={inputStyle} />
+        )}
+
+        {mode === 'login' && (
+          <div style={{ textAlign: 'right', marginBottom: 4 }}>
+            <span onClick={() => switchMode('reset')} style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)', cursor: 'pointer' }}>Forgot password?</span>
+          </div>
+        )}
 
         {notice && <div style={{ color: '#6ACBAB', fontSize: 12, marginBottom: 12, lineHeight: 1.4 }}>{notice}</div>}
         {error && <div style={{ color: '#F08080', fontSize: 12, marginBottom: 12, lineHeight: 1.4 }}>{error}</div>}
 
-        <button onClick={handleSubmit} disabled={loading || !email || !password}
+        <button onClick={handleSubmit} disabled={loading || !email || (mode !== 'reset' && !password)}
           style={{ width: '100%', padding: 15, background: loading ? 'rgba(200,123,10,0.5)' : '#C87B0A', color: '#fff', border: 'none', borderRadius: 13, fontSize: 15, fontWeight: 700, cursor: loading ? 'default' : 'pointer', letterSpacing: '-.2px', marginTop: 4, marginBottom: 14, boxShadow: '0 2px 12px rgba(200,123,10,0.35)' }}>
-          {loading ? 'Please wait…' : mode === 'signup' ? 'Create account' : 'Sign in'}
+          {loading ? 'Please wait…' : mode === 'signup' ? 'Create account' : mode === 'reset' ? 'Send reset link' : 'Sign in'}
         </button>
 
         <div style={{ textAlign: 'center', fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
-          {mode === 'signup' ? 'Already have an account? ' : 'New here? '}
-          <span onClick={() => { setMode(mode === 'signup' ? 'login' : 'signup'); setError(''); setNotice('') }} style={{ color: C.amber, cursor: 'pointer', fontWeight: 700 }}>
-            {mode === 'signup' ? 'Sign in' : 'Create account'}
-          </span>
+          {mode === 'reset' ? (
+            <span onClick={() => switchMode('login')} style={{ color: C.amber, cursor: 'pointer', fontWeight: 700 }}>Back to sign in</span>
+          ) : (
+            <>
+              {mode === 'signup' ? 'Already have an account? ' : 'New here? '}
+              <span onClick={() => switchMode(mode === 'signup' ? 'login' : 'signup')} style={{ color: C.amber, cursor: 'pointer', fontWeight: 700 }}>
+                {mode === 'signup' ? 'Sign in' : 'Create account'}
+              </span>
+            </>
+          )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── SET NEW PASSWORD (recovery) ─────────────────────────
+// Shown after the user opens a password-reset link (App detects PASSWORD_RECOVERY
+// and a temporary session is already active). updateUser sets the new password.
+function ResetPassword({ onDone }) {
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const submit = async () => {
+    if (password.length < 6) { setError('Use at least 6 characters.'); return }
+    if (password !== confirm) { setError('Those don’t match.'); return }
+    setLoading(true)
+    setError('')
+    const { error } = await supabase.auth.updateUser({ password })
+    setLoading(false)
+    if (error) { setError(error.message); return }
+    onDone()
+  }
+
+  const inputStyle = {
+    display: 'block', width: '100%', padding: '13px 14px',
+    border: `1.5px solid rgba(255,255,255,0.14)`, borderRadius: 13,
+    background: 'rgba(255,255,255,0.07)', color: '#fff', fontSize: 14,
+    fontWeight: 500, marginBottom: 10, outline: 'none',
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#1A1918' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '14px 22px 0', fontSize: 12, color: 'rgba(255,255,255,0.3)' }}>
+        <span>9:41</span>
+        <span style={{ display: 'flex', gap: 4 }}><i className="ti ti-wifi" style={{ fontSize: 12 }} /><i className="ti ti-battery-2" style={{ fontSize: 12 }} /></span>
+      </div>
+      <div style={{ flex: 1, padding: '24px 24px 0', overflowY: 'auto' }}>
+        <div style={{ marginBottom: 28, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+          <MbIcon size={60} />
+          <div style={{ fontFamily: 'Georgia, serif', fontSize: 24, fontWeight: 300, color: '#fff', letterSpacing: '-.4px' }}>phillumeni</div>
+        </div>
+        <div style={{ fontSize: 20, fontWeight: 700, color: '#fff', letterSpacing: '-.4px', marginBottom: 4 }}>Set a new password</div>
+        <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', marginBottom: 22 }}>Almost there — choose a new password.</div>
+
+        <input value={password} onChange={e => setPassword(e.target.value)} placeholder="New password" type="password" style={inputStyle} />
+        <input value={confirm} onChange={e => setConfirm(e.target.value)} placeholder="Confirm new password" type="password" style={inputStyle} />
+
+        {error && <div style={{ color: '#F08080', fontSize: 12, marginBottom: 12, lineHeight: 1.4 }}>{error}</div>}
+
+        <button onClick={submit} disabled={loading || !password || !confirm}
+          style={{ width: '100%', padding: 15, background: loading ? 'rgba(200,123,10,0.5)' : '#C87B0A', color: '#fff', border: 'none', borderRadius: 13, fontSize: 15, fontWeight: 700, cursor: loading ? 'default' : 'pointer', letterSpacing: '-.2px', marginTop: 4, boxShadow: '0 2px 12px rgba(200,123,10,0.35)' }}>
+          {loading ? 'Saving…' : 'Save password & sign in'}
+        </button>
       </div>
     </div>
   )
@@ -1994,6 +2074,7 @@ export default function App() {
   const [reported, setReported] = useState([]) // { id, venue_id }
   const [showSubmit, setShowSubmit] = useState(false)
   const [showAuth, setShowAuth] = useState(false)
+  const [recoveryMode, setRecoveryMode] = useState(false) // arrived via a password-reset link
   const [venuesError, setVenuesError] = useState(false)
   const [isAdmin, setIsAdmin] = useState(false)
   const [fakeReports, setFakeReports] = useState([]) // pending fake_reports (admin only)
@@ -2011,9 +2092,11 @@ export default function App() {
       if (!user) setShowAuth(true)
     })
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user || null)
       if (!session?.user) setShowAuth(true)
+      // Opened a reset link → show the "set new password" screen before the app.
+      if (event === 'PASSWORD_RECOVERY') { setRecoveryMode(true); setShowAuth(false) }
     })
 
     return () => subscription.unsubscribe()
@@ -2256,6 +2339,14 @@ export default function App() {
       <div style={{ ...phoneStyle, alignItems: 'center', justifyContent: 'center' }}>
         <MbIcon size={56} />
         <div style={{ marginTop: 16, fontFamily: 'Georgia, serif', fontSize: 20, fontWeight: 300, color: C.text }}>phillumeni</div>
+      </div>
+    )
+  }
+
+  if (recoveryMode) {
+    return (
+      <div style={phoneStyle}>
+        <ResetPassword onDone={() => setRecoveryMode(false)} />
       </div>
     )
   }
