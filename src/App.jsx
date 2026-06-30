@@ -466,7 +466,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
 }
 
 // ─── COLLECTION SCREEN ───────────────────────────────────
-function Collection({ items, venues, onRemove }) {
+function Collection({ items, venues, onRemove, onSubmit }) {
   const [view, setView] = useState('grid')
   const [detail, setDetail] = useState(null)
 
@@ -527,12 +527,17 @@ function Collection({ items, venues, onRemove }) {
         <div style={{ padding: '14px 16px 10px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
             <div style={{ fontSize: 20, fontWeight: 700, color: C.text, letterSpacing: '-.4px' }}>Your collection</div>
-            <div style={{ display: 'flex', gap: 2, background: C.surface, borderRadius: 9, padding: 3, border: `0.5px solid ${C.border}` }}>
-              {['grid', 'list'].map(v => (
-                <button key={v} onClick={() => setView(v)} style={{ width: 30, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, border: 'none', cursor: 'pointer', background: view === v ? C.card : 'transparent', color: view === v ? C.text : C.muted }}>
-                  <i className={`ti ti-${v === 'grid' ? 'layout-grid' : 'list'}`} style={{ fontSize: 13 }} />
-                </button>
-              ))}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <button onClick={onSubmit} style={{ display: 'flex', alignItems: 'center', gap: 5, background: C.dark, color: '#fff', border: 'none', borderRadius: 99, padding: '7px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                <i className="ti ti-plus" style={{ fontSize: 12 }} /> Submit
+              </button>
+              <div style={{ display: 'flex', gap: 2, background: C.surface, borderRadius: 9, padding: 3, border: `0.5px solid ${C.border}` }}>
+                {['grid', 'list'].map(v => (
+                  <button key={v} onClick={() => setView(v)} style={{ width: 30, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, border: 'none', cursor: 'pointer', background: view === v ? C.card : 'transparent', color: view === v ? C.text : C.muted }}>
+                    <i className={`ti ti-${v === 'grid' ? 'layout-grid' : 'list'}`} style={{ fontSize: 13 }} />
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -2472,6 +2477,7 @@ export default function App() {
               items={enrichedCollection}
               venues={venues}
               onRemove={handleRemoveFromCollection}
+              onSubmit={() => setShowSubmit(true)}
             />
           )}
           {tab === 'profile' && (
