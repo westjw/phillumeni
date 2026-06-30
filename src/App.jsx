@@ -16,6 +16,15 @@ const CITIES = [
 const cityCenter = (id) => (CITIES.find(c => c.id === id) || CITIES[0]).center
 const cityLabel = (id) => (CITIES.find(c => c.id === id) || CITIES[0]).label
 
+// Pull a real city + neighborhood out of a Mapbox feature's context (works for
+// both Search Box retrieve and Geocoding v6 forward) so venues aren't all "NYC".
+function placeFromContext(props) {
+  const ctx = (props && props.context) || {}
+  const city = ctx.place?.name || ctx.locality?.name || ctx.region?.name || null
+  const neighborhood = ctx.neighborhood?.name || ctx.locality?.name || null
+  return { city, neighborhood }
+}
+
 // Title-case a Mapbox poi_category (e.g. "fast food restaurant" -> "Fast Food Restaurant")
 const titleCase = (s) => (s ? String(s).replace(/\b\w/g, (c) => c.toUpperCase()) : s)
 
@@ -426,7 +435,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
             <i className="ti ti-map-pin" style={{ fontSize: 40, color: C.borderStr }} />
             <div style={{ fontSize: 22, fontWeight: 700, color: C.text, letterSpacing: '-.4px', margin: '12px 0 8px' }}>Nothing here yet</div>
             <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.6, marginBottom: 22 }}>
-              Every matchbook on this map was found by a real person. Be the first in NYC.
+              Every matchbook on this map was found by a real person. Be the first to add one.
             </div>
             <PrimaryBtn onClick={onSubmit}>Submit the first one</PrimaryBtn>
           </div>
@@ -483,9 +492,11 @@ function Collection({ items, venues, onRemove, onSubmit }) {
 
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
   const collected = items.map(item => ({ ...item, venue: venueMap[item.venue_id] })).filter(i => i.venue)
-  const nyc = collected.filter(i => i.venue.city === 'NYC')
-  const nycTotal = Math.max(venues.filter(v => v.city === 'NYC').length, nyc.length, 1)
   const hoods = [...new Set(collected.map(i => i.venue.neighborhood).filter(Boolean))]
+  // Matchbooks per city, most first — replaces the single-city "NYC progress".
+  const byCity = Object.entries(collected.reduce((m, i) => {
+    const c = i.venue.city || 'Unknown'; m[c] = (m[c] || 0) + 1; return m
+  }, {})).sort((a, b) => b[1] - a[1])
 
   if (detail) {
     const v = detail.venue
@@ -561,15 +572,15 @@ function Collection({ items, venues, onRemove, onSubmit }) {
             ))}
           </div>
 
-          {nyc.length > 0 && (
+          {byCity.length > 0 && (
             <Card style={{ padding: '11px 14px', marginBottom: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>NYC progress</div>
-                <div style={{ fontSize: 12, color: C.muted }}>{nyc.length} of {nycTotal} found</div>
-              </div>
-              <div style={{ height: 5, background: C.surface, borderRadius: 3 }}>
-                <div style={{ height: 5, background: C.green, borderRadius: 3, width: `${Math.min(100, Math.max(3, Math.round(nyc.length / nycTotal * 100)))}%`, transition: 'width .5s' }} />
-              </div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 8 }}>By city</div>
+              {byCity.map(([city, n]) => (
+                <div key={city} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 0' }}>
+                  <span style={{ fontSize: 13, color: C.sec }}>{city}</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{n}</span>
+                </div>
+              ))}
             </Card>
           )}
         </div>
@@ -775,15 +786,17 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
         )
         if (!res.ok) throw new Error('Could not load that place — pick another.')
         const retrieved = await res.json()
-        const coords = retrieved.features?.[0]?.geometry?.coordinates
+        const feat = retrieved.features?.[0]
+        const coords = feat?.geometry?.coordinates
         if (!coords || coords.length < 2) throw new Error('No location found for that place.')
         const [lng, lat] = coords
+        const place = placeFromContext(feat?.properties)
 
         const venueRow = {
           name: picked.name,
           address: picked.address.split(',').slice(0, 2).join(','),
-          neighborhood: picked.address.split(',')[1]?.trim() || 'NYC',
-          city: 'NYC',
+          neighborhood: place.neighborhood || picked.address.split(',')[1]?.trim() || null,
+          city: place.city || 'Unknown',
           lat,
           lng,
           type: picked.type,
@@ -920,6 +933,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
     try {
       const center = cityCenter(manualCity)
       let lng = center.lng, lat = center.lat
+      let geoCity = null, geoHood = null
       try {
         const res = await fetch(
           `https://api.mapbox.com/search/geocode/v6/forward?q=${encodeURIComponent(`${address}, ${cityLabel(manualCity)}`)}` +
@@ -927,16 +941,19 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
         )
         if (res.ok) {
           const data = await res.json()
-          const coords = data.features?.[0]?.geometry?.coordinates
+          const feat = data.features?.[0]
+          const coords = feat?.geometry?.coordinates
           if (coords && coords.length >= 2) { lng = coords[0]; lat = coords[1] }
+          const place = placeFromContext(feat?.properties)
+          geoCity = place.city; geoHood = place.neighborhood
         }
       } catch { /* keep the city-center fallback */ }
 
       const venueRow = {
         name,
         address,
-        neighborhood: address.split(',')[1]?.trim() || null,
-        city: manualCity,
+        neighborhood: geoHood || address.split(',')[1]?.trim() || null,
+        city: geoCity || cityLabel(manualCity),
         lat,
         lng,
         type: 'Spot',
@@ -948,12 +965,15 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
         added_manually: true,
       }
       // Dedup: don't create a second venue for a place already on the map. Match
-      // by name (case-insensitive) within the city — covers both a re-add and a
-      // venue someone else already submitted (search or manual).
+      // by name (case-insensitive) + proximity (~2km), so the same name in a
+      // different city doesn't falsely merge but a genuine re-add does.
       let venue = null
       let inserted = false
       const { data: dupes } = await supabase
-        .from('venues').select('*').eq('city', manualCity).ilike('name', name).limit(1)
+        .from('venues').select('*').ilike('name', name)
+        .gte('lat', lat - 0.02).lte('lat', lat + 0.02)
+        .gte('lng', lng - 0.02).lte('lng', lng + 0.02)
+        .limit(1)
       if (dupes && dupes.length) venue = dupes[0]
       if (venue?.status === 'closed') throw new Error('That spot is marked closed and can’t be collected.')
 
@@ -1581,9 +1601,10 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onSheetOpenChange 
 }
 
 // ─── PROFILE SCREEN ──────────────────────────────────────
-function ProfileScreen({ user, collection, nycTotal, onSignOut, isAdmin, pendingReports = 0, onOpenAdmin, onOpenInvite, following = [], onUnfollow, onOpenFind }) {
-  const nyc = collection.filter(i => i.venue?.city === 'NYC')
-  const nycGoal = Math.max(nycTotal || 0, nyc.length, 1)
+function ProfileScreen({ user, collection, onSignOut, isAdmin, pendingReports = 0, onOpenAdmin, onOpenInvite, following = [], onUnfollow, onOpenFind }) {
+  const byCity = Object.entries(collection.filter(i => i.venue).reduce((m, i) => {
+    const c = i.venue.city || 'Unknown'; m[c] = (m[c] || 0) + 1; return m
+  }, {})).sort((a, b) => b[1] - a[1])
   const username = user.user_metadata?.username || user.email?.split('@')[0] || 'collector'
 
   return (
@@ -1652,15 +1673,15 @@ function ProfileScreen({ user, collection, nycTotal, onSignOut, isAdmin, pending
             ))}
           </div>
 
-          {nyc.length > 0 && (
+          {byCity.length > 0 && (
             <Card style={{ padding: '11px 14px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>NYC progress</div>
-                <div style={{ fontSize: 12, color: C.muted }}>{nyc.length} of {nycGoal} found</div>
-              </div>
-              <div style={{ height: 5, background: C.surface, borderRadius: 3 }}>
-                <div style={{ height: 5, background: C.green, borderRadius: 3, width: `${Math.min(100, Math.max(3, Math.round(nyc.length / nycGoal * 100)))}%` }} />
-              </div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 8 }}>By city</div>
+              {byCity.map(([city, n]) => (
+                <div key={city} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 0' }}>
+                  <span style={{ fontSize: 13, color: C.sec }}>{city}</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{n}</span>
+                </div>
+              ))}
             </Card>
           )}
         </div>
@@ -2511,7 +2532,6 @@ export default function App() {
             <ProfileScreen
               user={user}
               collection={enrichedCollection}
-              nycTotal={venues.filter(v => v.city === 'NYC').length}
               onSignOut={handleSignOut}
               isAdmin={isAdmin}
               pendingReports={fakeReports.length}
