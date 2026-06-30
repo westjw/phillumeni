@@ -8,6 +8,14 @@ import { supabase } from './supabase.js'
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
 const NYC = { lng: -74.006, lat: 40.7128 }
 
+// Supported cities for manual entry — a real dropdown so adding a second city
+// later is a data change, not a UI change (spec §2). center = geocode fallback.
+const CITIES = [
+  { id: 'NYC', label: 'New York City', center: NYC },
+]
+const cityCenter = (id) => (CITIES.find(c => c.id === id) || CITIES[0]).center
+const cityLabel = (id) => (CITIES.find(c => c.id === id) || CITIES[0]).label
+
 // Title-case a Mapbox poi_category (e.g. "fast food restaurant" -> "Fast Food Restaurant")
 const titleCase = (s) => (s ? String(s).replace(/\b\w/g, (c) => c.toUpperCase()) : s)
 const venueInitials = (name) => (name || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('')
@@ -241,10 +249,17 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
 }
 
 // ─── EXPLORE SCREEN ──────────────────────────────────────
-function Explore({ venues, collectionIds, reported, onCollect, onFlag, onSubmit, venuesError, onRetry }) {
+function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeReport, onSubmit, venuesError, onRetry, onSheetOpenChange }) {
   const [selected, setSelected] = useState(null)
   const [filter, setFilter] = useState('all')
+  const [reporting, setReporting] = useState(null) // venue being reported
   const reportedIds = useMemo(() => reported.map(r => r.venue_id), [reported])
+
+  // Tell the shell a sheet is open so it can hide the tab bar (sheet covers it).
+  useEffect(() => {
+    onSheetOpenChange?.(!!reporting)
+    return () => onSheetOpenChange?.(false)
+  }, [reporting]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const listed = venues
     .filter(v => {
@@ -258,7 +273,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onSubmit,
     .slice(0, 8)
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}>
       {/* Top bar */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px 0', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -333,8 +348,8 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onSubmit,
             ) : (
               <>
                 <PrimaryBtn onClick={() => { onCollect(selected); setSelected(null) }} style={{ marginBottom: 8 }}>Got it — add to collection</PrimaryBtn>
-                <OutlineBtn onClick={() => { onFlag(selected.id); setSelected(null) }} color={C.red}>
-                  <i className="ti ti-alert-triangle" style={{ fontSize: 12, marginRight: 5 }} />Not available here
+                <OutlineBtn onClick={() => setReporting(selected)} color={C.red}>
+                  <i className="ti ti-flag" style={{ fontSize: 12, marginRight: 5 }} />Report a problem
                 </OutlineBtn>
               </>
             )}
@@ -380,6 +395,15 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onSubmit,
           </div>
         )}
       </div>
+
+      {reporting && (
+        <ReportSheet
+          venue={reporting}
+          onClose={() => setReporting(null)}
+          onNotAvailable={async (venueId) => { const ok = await onFlag(venueId); if (ok) setSelected(null); return ok }}
+          onFake={onFakeReport}
+        />
+      )}
     </div>
   )
 }
@@ -521,7 +545,7 @@ function Collection({ items, venues, onRemove }) {
 }
 
 // ─── SUBMIT SCREEN ───────────────────────────────────────
-function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
+function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onSheetOpenChange }) {
   const [step, setStep] = useState(1)
   const [photos, setPhotos] = useState([]) // { id, preview, url, path, status: 'uploading'|'done'|'error' }
   const photosRef = useRef(photos)
@@ -536,7 +560,20 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
   const [addErr, setAddErr] = useState('')
   const [addedVenue, setAddedVenue] = useState(null)
   const [needsRanking, setNeedsRanking] = useState(false)
+  // Manual entry ("can't find it") — spec §2
+  const [showManual, setShowManual] = useState(false)
+  const [manualCity, setManualCity] = useState('NYC')
+  const [manualName, setManualName] = useState('')
+  const [manualAddress, setManualAddress] = useState('')
+  const [manualErr, setManualErr] = useState('')
+  const [manualAdding, setManualAdding] = useState(false)
   const searchTimer = useRef(null)
+
+  // The manual-entry sheet covers the screen — hide the shell's tab bar with it.
+  useEffect(() => {
+    onSheetOpenChange?.(showManual)
+    return () => onSheetOpenChange?.(false)
+  }, [showManual]) // eslint-disable-line react-hooks/exhaustive-deps
   const fileInputRef = useRef(null)
   const searchSeq = useRef(0)        // guards against out-of-order search responses
   const sessionRef = useRef('')      // Search Box billing session (suggest + retrieve)
@@ -700,86 +737,162 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
         }
       }
 
-      // Re-check on the final venue (the create-race path may have resolved to a
-      // row that was auto-closed since the search) before collecting.
-      if (venue?.status === 'closed') {
-        throw new Error('That spot is marked closed and can’t be collected.')
-      }
-
-      // Add to collection — capture the real row (serial id) and surface errors.
-      // First-ever ranked venue gets score 7.5 automatically (spec §3).
-      // photos[] (006) and score (007) may not be migrated yet — on an
-      // undefined-column error (42703) strip the offending key and retry, the
-      // same column-tolerance contract handleAdd uses for mapbox_id.
-      const isFirstRanked = rankedItems.length === 0
-      const cover = photoUrls[0] || null
-      const insertRow = { user_id: user.id, venue_id: venue.id, photo_url: cover, photos: photoUrls, score: isFirstRanked ? 7.5 : null }
-      let collectionRow = null, collErr = null
-      for (let attempt = 0; attempt < 3; attempt++) {
-        ;({ data: collectionRow, error: collErr } = await supabase
-          .from('collections').insert(insertRow).select().single())
-        if (!collErr || collErr.code !== '42703') break
-        const m = collErr.message || ''
-        if (/photos/.test(m) && 'photos' in insertRow) delete insertRow.photos
-        else if (/score/.test(m) && 'score' in insertRow) delete insertRow.score
-        else break
-      }
-
-      let savedRow = collectionRow
-      if (collErr) {
-        // unique(user_id, venue_id): already collected. Treat as success, but merge
-        // any newly-uploaded photos into the existing row.
-        if (collErr.code === '23505') {
-          if (photoUrls.length) {
-            const { data: existingC, error: selErr } = await supabase
-              .from('collections').select('photos, photo_url')
-              .eq('user_id', user.id).eq('venue_id', venue.id).single()
-            if (!selErr) {
-              // seed photos[] from the existing cover so photos[0] === photo_url holds
-              const existingPhotos = (existingC && existingC.photos && existingC.photos.length)
-                ? existingC.photos
-                : ((existingC && existingC.photo_url) ? [existingC.photo_url] : [])
-              const merged = [...existingPhotos, ...photoUrls]
-              const { data: updated } = await supabase
-                .from('collections')
-                .update({ photos: merged, photo_url: merged[0] })
-                .eq('user_id', user.id).eq('venue_id', venue.id).select().single()
-              savedRow = updated || null
-            } else {
-              // photos column not migrated — keep any existing cover, only set if missing
-              const { data: legacy } = await supabase
-                .from('collections').select('photo_url')
-                .eq('user_id', user.id).eq('venue_id', venue.id).single()
-              const { data: updated } = await supabase
-                .from('collections').update({ photo_url: (legacy && legacy.photo_url) || cover })
-                .eq('user_id', user.id).eq('venue_id', venue.id).select().single()
-              savedRow = updated || null
-            }
-          } else {
-            // No new photos — still read the row back so an already-collected
-            // but UNRANKED venue (score null) can be offered the ranking flow.
-            const { data: existingRow } = await supabase
-              .from('collections').select('*')
-              .eq('user_id', user.id).eq('venue_id', venue.id).maybeSingle()
-            savedRow = existingRow || null
-          }
-        } else {
-          throw collErr
-        }
-      }
-
-      setAddedVenue(venue)
-      // Offer ranking when the venue isn't the user's first ranked one and its
-      // collection row currently has no score (newly added, or never ranked).
-      setNeedsRanking(!isFirstRanked && !!savedRow && savedRow.score == null)
-      onAdded(venue, savedRow || null)
-      sessionRef.current = '' // start a fresh billing session for the next submit
-      setStep(3)
+      await collectVenue(venue)
     } catch (e) {
       console.error(e)
       setAddErr(e.message || 'Something went wrong. Try again.')
     }
     setAdding(false)
+  }
+
+  // Collect a resolved venue into the user's collection, then trigger ranking.
+  // Shared by the search path (handleAdd) and manual entry (handleAddManual).
+  const collectVenue = async (venue) => {
+    // Re-check the final venue (a create-race may have resolved to an auto-closed row).
+    if (venue?.status === 'closed') {
+      throw new Error('That spot is marked closed and can’t be collected.')
+    }
+
+    // Add to collection — capture the real row (serial id) and surface errors.
+    // First-ever ranked venue gets score 7.5 automatically (spec §3).
+    // photos[] (006) and score (007) may not be migrated yet — on an
+    // undefined-column error (42703) strip the offending key and retry, the
+    // same column-tolerance contract handleAdd uses for mapbox_id.
+    const isFirstRanked = rankedItems.length === 0
+    const cover = photoUrls[0] || null
+    const insertRow = { user_id: user.id, venue_id: venue.id, photo_url: cover, photos: photoUrls, score: isFirstRanked ? 7.5 : null }
+    let collectionRow = null, collErr = null
+    for (let attempt = 0; attempt < 3; attempt++) {
+      ;({ data: collectionRow, error: collErr } = await supabase
+        .from('collections').insert(insertRow).select().single())
+      if (!collErr || collErr.code !== '42703') break
+      const m = collErr.message || ''
+      if (/photos/.test(m) && 'photos' in insertRow) delete insertRow.photos
+      else if (/score/.test(m) && 'score' in insertRow) delete insertRow.score
+      else break
+    }
+
+    let savedRow = collectionRow
+    if (collErr) {
+      // unique(user_id, venue_id): already collected. Treat as success, but merge
+      // any newly-uploaded photos into the existing row.
+      if (collErr.code === '23505') {
+        if (photoUrls.length) {
+          const { data: existingC, error: selErr } = await supabase
+            .from('collections').select('photos, photo_url')
+            .eq('user_id', user.id).eq('venue_id', venue.id).single()
+          if (!selErr) {
+            // seed photos[] from the existing cover so photos[0] === photo_url holds
+            const existingPhotos = (existingC && existingC.photos && existingC.photos.length)
+              ? existingC.photos
+              : ((existingC && existingC.photo_url) ? [existingC.photo_url] : [])
+            const merged = [...existingPhotos, ...photoUrls]
+            const { data: updated } = await supabase
+              .from('collections')
+              .update({ photos: merged, photo_url: merged[0] })
+              .eq('user_id', user.id).eq('venue_id', venue.id).select().single()
+            savedRow = updated || null
+          } else {
+            // photos column not migrated — keep any existing cover, only set if missing
+            const { data: legacy } = await supabase
+              .from('collections').select('photo_url')
+              .eq('user_id', user.id).eq('venue_id', venue.id).single()
+            const { data: updated } = await supabase
+              .from('collections').update({ photo_url: (legacy && legacy.photo_url) || cover })
+              .eq('user_id', user.id).eq('venue_id', venue.id).select().single()
+            savedRow = updated || null
+          }
+        } else {
+          // No new photos — still read the row back so an already-collected
+          // but UNRANKED venue (score null) can be offered the ranking flow.
+          const { data: existingRow } = await supabase
+            .from('collections').select('*')
+            .eq('user_id', user.id).eq('venue_id', venue.id).maybeSingle()
+          savedRow = existingRow || null
+        }
+      } else {
+        throw collErr
+      }
+    }
+
+    setAddedVenue(venue)
+    // Offer ranking when the venue isn't the user's first ranked one and its
+    // collection row currently has no score (newly added, or never ranked).
+    setNeedsRanking(!isFirstRanked && !!savedRow && savedRow.score == null)
+    onAdded(venue, savedRow || null)
+    sessionRef.current = '' // start a fresh billing session for the next submit
+    setStep(3)
+  }
+
+  // Manual entry (spec §2): geocode the typed address → insert a venue with
+  // added_manually = true → collect it like any other. Falls back to the city
+  // center if geocoding fails, so the venue always has coordinates for its pin.
+  const handleAddManual = async () => {
+    if (!user) return
+    const name = manualName.trim()
+    const address = manualAddress.trim()
+    if (!name) { setManualErr('Add the venue name.'); return }
+    if (!address) { setManualErr('Add the address.'); return }
+    setManualAdding(true)
+    setManualErr('')
+    try {
+      const center = cityCenter(manualCity)
+      let lng = center.lng, lat = center.lat
+      try {
+        const res = await fetch(
+          `https://api.mapbox.com/search/geocode/v6/forward?q=${encodeURIComponent(`${address}, ${cityLabel(manualCity)}`)}` +
+          `&proximity=${center.lng},${center.lat}&limit=1&access_token=${MAPBOX_TOKEN}`
+        )
+        if (res.ok) {
+          const data = await res.json()
+          const coords = data.features?.[0]?.geometry?.coordinates
+          if (coords && coords.length >= 2) { lng = coords[0]; lat = coords[1] }
+        }
+      } catch { /* keep the city-center fallback */ }
+
+      const venueRow = {
+        name,
+        address,
+        neighborhood: address.split(',')[1]?.trim() || null,
+        city: manualCity,
+        lat,
+        lng,
+        type: 'Spot',
+        emoji: '🔥',
+        bg_color: '#281808',
+        sources: ['Submitted by ' + (user.email?.split('@')[0] || 'user')],
+        created_by: user.id,
+        verified: false,
+        added_manually: true,
+      }
+      // added_manually (007) may not be migrated — strip on 42703 and retry.
+      let venue = null
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const { data, error } = await supabase.from('venues').insert(venueRow).select().single()
+        if (!error) { venue = data; break }
+        if (error.code === '42703' && /added_manually/.test(error.message || '') && 'added_manually' in venueRow) {
+          delete venueRow.added_manually
+          continue
+        }
+        throw error
+      }
+
+      setPicked({ name, address, manual: true })
+      try {
+        await collectVenue(venue)
+      } catch (collectErr) {
+        // The venue row is already committed but uncollected. Manual venues have
+        // no mapbox_id, so a retry would duplicate it — roll it back first (the
+        // creator-delete RLS policy permits deleting one's own unverified venue).
+        await supabase.from('venues').delete().eq('id', venue.id)
+        throw collectErr
+      }
+      setShowManual(false)
+    } catch (e) {
+      console.error(e)
+      setManualErr(e.message || 'Couldn’t add it. Try again.')
+    }
+    setManualAdding(false)
   }
 
   // "Skip for now" from the step-3 confirmation: never leave the new venue at
@@ -822,7 +935,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: C.bg }}>
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: C.bg, position: 'relative' }}>
       <SBar />
       <div style={{ display: 'flex', alignItems: 'center', padding: '8px 16px 0', flexShrink: 0, gap: 10 }}>
         <button onClick={step === 1 ? onBack : () => setStep(s => s - 1)} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, color: C.amber, fontSize: 13, fontWeight: 700 }}>
@@ -929,6 +1042,16 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
               </Card>
             )}
 
+            {query.trim().length >= 2 && !searching && results.length === 0 && !searchErr && !picked && (
+              <div style={{ textAlign: 'center', fontSize: 13, color: C.muted, margin: '2px 0 12px' }}>No matches found</div>
+            )}
+
+            {/* Manual-entry escape hatch (spec §2) — closed/missing venues */}
+            <button onClick={() => { setManualName(query.trim()); setManualAddress(''); setManualErr(''); setShowManual(true) }}
+              style={{ width: '100%', padding: 13, border: `1.5px dashed ${C.borderStr}`, borderRadius: 13, background: 'transparent', color: C.text, fontSize: 13, fontWeight: 700, cursor: 'pointer', marginBottom: 16 }}>
+              Can't find it? This place might be closed
+            </button>
+
             {addErr && (
               <div style={{ fontSize: 12, color: C.red, marginBottom: 10, lineHeight: 1.4 }}>{addErr}</div>
             )}
@@ -958,6 +1081,111 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
               </>
             )}
           </div>
+        )}
+      </div>
+
+      {/* Manual-entry bottom sheet (spec §2) */}
+      {showManual && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 30, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={() => !manualAdding && setShowManual(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+          <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px', maxHeight: '88%', overflowY: 'auto', boxShadow: '0 -6px 24px rgba(0,0,0,0.18)' }}>
+            <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
+            <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 6 }}>Add it manually</div>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 18 }}>We'll geocode the address ourselves so it still shows up on the map correctly.</div>
+
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.5px', marginBottom: 7 }}>CITY</div>
+            <div style={{ position: 'relative', marginBottom: 16 }}>
+              <select value={manualCity} onChange={e => setManualCity(e.target.value)}
+                style={{ width: '100%', padding: '13px 14px', border: `1.5px solid ${C.amberBd}`, borderRadius: 13, background: C.amberBg, color: C.amber, fontSize: 15, fontWeight: 700, appearance: 'none', WebkitAppearance: 'none', cursor: 'pointer', outline: 'none' }}>
+                {CITIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+              </select>
+              <i className="ti ti-chevron-down" style={{ position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', color: C.amber, fontSize: 16, pointerEvents: 'none' }} />
+            </div>
+
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.5px', marginBottom: 7 }}>VENUE NAME</div>
+            <input value={manualName} onChange={e => setManualName(e.target.value)} placeholder="Venue name"
+              style={{ width: '100%', padding: '13px 14px', border: `1.5px solid ${C.border}`, borderRadius: 13, background: C.card, color: C.text, fontSize: 15, fontWeight: 500, outline: 'none', marginBottom: 16 }} />
+
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.5px', marginBottom: 7 }}>ADDRESS</div>
+            <input value={manualAddress} onChange={e => setManualAddress(e.target.value)} placeholder="Street, neighborhood…"
+              style={{ width: '100%', padding: '13px 14px', border: `1.5px solid ${C.border}`, borderRadius: 13, background: C.card, color: C.text, fontSize: 15, fontWeight: 500, outline: 'none', marginBottom: 18 }} />
+
+            {manualErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, lineHeight: 1.4 }}>{manualErr}</div>}
+            <PrimaryBtn onClick={handleAddManual} disabled={manualAdding}>{manualAdding ? 'Adding…' : 'Continue'}</PrimaryBtn>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── REPORT SHEET (spec §4/§5) ───────────────────────────
+// Bottom sheet: "Not available here" (reports) + "This isn't a real matchbook"
+// (fake_reports). Reusable from the Explore detail and the Rankings row menu.
+function ReportSheet({ venue, onClose, onNotAvailable, onFake }) {
+  const [mode, setMode] = useState('menu') // menu | fake
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  if (!venue) return null
+
+  // Handlers return false on a failed write — keep the sheet open + show the
+  // error instead of closing as if the report landed.
+  const runNotAvailable = async () => {
+    setBusy(true)
+    setErr('')
+    const ok = await onNotAvailable(venue.id)
+    setBusy(false)
+    if (ok === false) { setErr('Couldn’t send that — check your connection and try again.'); return }
+    onClose()
+  }
+  const runFake = async () => {
+    setBusy(true)
+    setErr('')
+    const ok = await onFake(venue.id, reason.trim())
+    setBusy(false)
+    if (ok === false) { setErr('Couldn’t send that — check your connection and try again.'); return }
+    onClose()
+  }
+
+  const option = { width: '100%', display: 'flex', alignItems: 'center', gap: 14, padding: '14px', border: `1.5px solid ${C.border}`, borderRadius: 14, background: C.card, cursor: 'pointer', marginBottom: 10, textAlign: 'left' }
+  const iconWrap = { width: 44, height: 44, borderRadius: 12, background: C.surface, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, zIndex: 40, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+      <div onClick={() => !busy && onClose()} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+      <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px', boxShadow: '0 -6px 24px rgba(0,0,0,0.18)' }}>
+        <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 16 }}>Report a problem</div>
+
+        {mode === 'menu' ? (
+          <>
+            <button onClick={runNotAvailable} disabled={busy} style={option}>
+              <div style={iconWrap}><i className="ti ti-map-pin-off" style={{ fontSize: 20, color: C.sec }} /></div>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Not available here</div>
+                <div style={{ fontSize: 12, color: C.muted }}>This spot ran out or stopped having them</div>
+              </div>
+            </button>
+            <button onClick={() => setMode('fake')} disabled={busy} style={option}>
+              <div style={iconWrap}><i className="ti ti-flag" style={{ fontSize: 20, color: C.red }} /></div>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>This isn't a real matchbook</div>
+                <div style={{ fontSize: 12, color: C.muted }}>Photo looks fake, stock, or wrong venue</div>
+              </div>
+            </button>
+            {err && <div style={{ fontSize: 12, color: C.red, margin: '2px 0 10px', lineHeight: 1.4 }}>{err}</div>}
+            <button onClick={onClose} disabled={busy} style={{ width: '100%', padding: 13, marginTop: 4, background: 'none', border: 'none', color: C.muted, fontSize: 15, fontWeight: 600, cursor: busy ? 'default' : 'pointer' }}>Cancel</button>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 10, lineHeight: 1.5 }}>What's wrong with it? <span style={{ color: C.muted }}>(optional)</span> A person reviews every report.</div>
+            <textarea value={reason} onChange={e => setReason(e.target.value)} rows={3} placeholder="e.g. this is a stock photo, not an actual matchbook"
+              style={{ width: '100%', padding: 12, border: `1.5px solid ${C.border}`, borderRadius: 12, background: C.card, color: C.text, fontSize: 14, outline: 'none', resize: 'none', marginBottom: 14, fontFamily: 'inherit', lineHeight: 1.4 }} />
+            {err && <div style={{ fontSize: 12, color: C.red, marginBottom: 10, lineHeight: 1.4 }}>{err}</div>}
+            <PrimaryBtn onClick={runFake} disabled={busy}>{busy ? 'Reporting…' : 'Submit report'}</PrimaryBtn>
+            <button onClick={() => setMode('menu')} disabled={busy} style={{ width: '100%', padding: 12, marginTop: 8, background: 'none', border: 'none', color: C.muted, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Back</button>
+          </>
         )}
       </div>
     </div>
@@ -1114,9 +1342,15 @@ function ComparisonFlow({ newVenue, rankedItems, user, onDone }) {
 }
 
 // ─── RANKINGS SCREEN ─────────────────────────────────────
-function Rankings({ collection, venues }) {
+function Rankings({ collection, venues, onFlag, onFakeReport, onSheetOpenChange }) {
   const [tab, setTab] = useState('mine')
+  const [reporting, setReporting] = useState(null) // venue being reported
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
+
+  useEffect(() => {
+    onSheetOpenChange?.(!!reporting)
+    return () => onSheetOpenChange?.(false)
+  }, [reporting]) // eslint-disable-line react-hooks/exhaustive-deps
   // Attach venue and drop venue-less rows BEFORE numbering, so rank is always
   // contiguous with the rendered list (no gaps if a venue hasn't loaded yet).
   const ranked = collection
@@ -1135,7 +1369,7 @@ function Rankings({ collection, venues }) {
   })
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}>
       <SBar />
       <div style={{ padding: '12px 16px 0', flexShrink: 0 }}>
         <div style={{ fontSize: 28, fontWeight: 800, color: C.text, letterSpacing: '-.6px', marginBottom: 12 }}>Rankings</div>
@@ -1170,7 +1404,7 @@ function Rankings({ collection, venues }) {
                     <div style={{ fontSize: 12, color: C.muted }}>{item.venue.neighborhood || item.venue.city}</div>
                   </div>
                   <div style={{ fontSize: 18, fontWeight: 700, color: C.amber, flexShrink: 0 }}>{Number(item.score).toFixed(1)}</div>
-                  <button style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: '4px 2px', fontSize: 18, flexShrink: 0, letterSpacing: '.5px' }}>···</button>
+                  <button onClick={() => setReporting(item.venue)} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: '4px 2px', fontSize: 18, flexShrink: 0, letterSpacing: '.5px' }}>···</button>
                 </div>
               ))}
               <div style={{ height: 24 }} />
@@ -1184,12 +1418,21 @@ function Rankings({ collection, venues }) {
           </div>
         )}
       </div>
+
+      {reporting && (
+        <ReportSheet
+          venue={reporting}
+          onClose={() => setReporting(null)}
+          onNotAvailable={onFlag}
+          onFake={onFakeReport}
+        />
+      )}
     </div>
   )
 }
 
 // ─── PROFILE SCREEN ──────────────────────────────────────
-function ProfileScreen({ user, collection, nycTotal, onSignOut }) {
+function ProfileScreen({ user, collection, nycTotal, onSignOut, isAdmin, pendingReports = 0, onOpenAdmin }) {
   const nyc = collection.filter(i => i.venue?.city === 'NYC')
   const nycGoal = Math.max(nycTotal || 0, nyc.length, 1)
   const username = user.user_metadata?.username || user.email?.split('@')[0] || 'collector'
@@ -1205,6 +1448,20 @@ function ProfileScreen({ user, collection, nycTotal, onSignOut }) {
           </div>
           <div style={{ fontSize: 18, fontWeight: 700, color: C.text, letterSpacing: '-.3px', marginBottom: 2 }}>{username}</div>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>{user.email}</div>
+
+          {isAdmin && (
+            <button onClick={onOpenAdmin} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', marginBottom: 14, background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, cursor: 'pointer', boxShadow: '0 1px 6px rgba(0,0,0,0.06)' }}>
+              <i className="ti ti-shield-check" style={{ fontSize: 20, color: C.amber }} />
+              <div style={{ flex: 1, textAlign: 'left' }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.text }}>Reported photos</div>
+                <div style={{ fontSize: 11, color: C.muted }}>Moderate flagged submissions</div>
+              </div>
+              {pendingReports > 0 && (
+                <span style={{ minWidth: 22, height: 22, padding: '0 6px', borderRadius: 11, background: C.red, color: '#fff', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{pendingReports}</span>
+              )}
+              <i className="ti ti-chevron-right" style={{ fontSize: 16, color: C.muted }} />
+            </button>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 14 }}>
             {[{ n: collection.length, l: 'matchbooks' }, { n: new Set(collection.map(i => i.venue?.city)).size, l: 'cities' }, { n: collection.filter(i => (i.venue?.sources || []).length >= 2).length, l: 'verified' }].map((s, i) => (
@@ -1246,6 +1503,94 @@ function ProfileScreen({ user, collection, nycTotal, onSignOut }) {
           </div>
         )}
         <div style={{ height: 24 }} />
+      </div>
+    </div>
+  )
+}
+
+// ─── ADMIN: REPORTED PHOTOS QUEUE (spec §4/§5) ───────────
+// Gated by profiles.is_admin. Accept → delete venue (FK cascade clears every
+// collector's copy + score). Reject → mark resolved, venue untouched.
+function AdminQueue({ reports, venues, onAccept, onReject, onBack }) {
+  const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
+  const [names, setNames] = useState({}) // user id → username (best-effort, admin read)
+  const [busyId, setBusyId] = useState(null)
+
+  // Venue comes from the embedded FK join (r.venue); fall back to the client
+  // array. Never drop a report — keep the queue count in sync with the badge.
+  const enriched = reports.map(r => ({ ...r, venue: r.venue || venueMap[r.venue_id] }))
+
+  // Resolve submitter + reporter usernames (needs migration 008's admin-read on
+  // profiles; degrades to "a collector" if absent).
+  useEffect(() => {
+    const ids = [...new Set(enriched.flatMap(r => [r.reporter_id, r.venue?.created_by]).filter(Boolean))]
+    if (!ids.length) return
+    supabase.from('profiles').select('id, username').in('id', ids).then(({ data }) => {
+      if (data) setNames(Object.fromEntries(data.map(p => [p.id, p.username])))
+    })
+  }, [reports]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const uname = (id) => (id && names[id]) ? '@' + names[id] : 'a collector'
+
+  const accept = async (r) => { setBusyId(r.id); await onAccept(r.venue_id, r.id); setBusyId(null) }
+  const reject = async (r) => { setBusyId(r.id); await onReject(r.id); setBusyId(null) }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: C.bg }}>
+      <SBar />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px 0', flexShrink: 0 }}>
+        <button onClick={onBack} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, color: C.amber, fontSize: 13, fontWeight: 700 }}>
+          <i className="ti ti-arrow-left" style={{ fontSize: 14 }} />Profile
+        </button>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', padding: '8px 16px 24px' }}>
+        <div style={{ fontSize: 28, fontWeight: 800, color: C.text, letterSpacing: '-.6px', marginTop: 6 }}>Reported photos</div>
+        <div style={{ fontSize: 13, color: C.muted, marginBottom: 18 }}>{enriched.length} pending</div>
+
+        {enriched.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>Queue is clear</div>
+            <div style={{ fontSize: 13, color: C.muted }}>No reported photos to review right now.</div>
+          </div>
+        ) : (
+          <>
+            {enriched.map(r => {
+              const busy = busyId === r.id
+              const v = r.venue
+              return (
+                <Card key={r.id} style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
+                  <div style={{ height: 150, background: v?.bg_color || C.dark, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <div style={{ width: 78, height: 78, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, fontWeight: 700, color: 'rgba(255,255,255,0.92)', letterSpacing: '.5px' }}>
+                      {v ? venueInitials(v.name) : '?'}
+                    </div>
+                  </div>
+                  <div style={{ padding: '14px 16px 16px' }}>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: C.text, letterSpacing: '-.3px' }}>{v?.name || 'Unknown venue'}</div>
+                    <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>
+                      Submitted by {uname(v?.created_by)}{v?.neighborhood ? ` · ${v.neighborhood}` : ''}
+                    </div>
+                    <div style={{ background: C.amberBg, borderRadius: 12, padding: '10px 12px', fontSize: 13, color: C.amber, lineHeight: 1.5, marginBottom: 14 }}>
+                      Reported: {r.reason ? `"${r.reason}"` : '(no note)'} — {uname(r.reporter_id)}
+                    </div>
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      <button onClick={() => accept(r)} disabled={busy} style={{ flex: 1, padding: 13, background: C.red, color: '#fff', border: 'none', borderRadius: 12, fontSize: 14, fontWeight: 700, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1 }}>
+                        {busy ? '…' : 'Accept — remove'}
+                      </button>
+                      <button onClick={() => reject(r)} disabled={busy} style={{ flex: 1, padding: 13, background: C.card, color: C.text, border: `1.5px solid ${C.border}`, borderRadius: 12, fontSize: 14, fontWeight: 700, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1 }}>
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                </Card>
+              )
+            })}
+            <div style={{ background: C.surface, borderRadius: 12, padding: '12px 14px', fontSize: 12, color: C.muted, lineHeight: 1.6 }}>
+              Accepting deletes the venue. Every collector's "got it" and score for it disappears automatically — the existing FK cascade handles it, no extra code.
+            </div>
+          </>
+        )}
       </div>
     </div>
   )
@@ -1379,6 +1724,10 @@ export default function App() {
   const [showSubmit, setShowSubmit] = useState(false)
   const [showAuth, setShowAuth] = useState(false)
   const [venuesError, setVenuesError] = useState(false)
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [fakeReports, setFakeReports] = useState([]) // pending fake_reports (admin only)
+  const [showAdmin, setShowAdmin] = useState(false)
+  const [sheetOpen, setSheetOpen] = useState(false) // a bottom sheet is open → hide TabBar
 
   // Auth state
   useEffect(() => {
@@ -1434,6 +1783,28 @@ export default function App() {
       })
   }, [user])
 
+  // Am I an admin? (own profile is readable under the owner-only SELECT policy)
+  useEffect(() => {
+    if (!user) { setIsAdmin(false); return }
+    supabase.from('profiles').select('is_admin').eq('id', user.id).maybeSingle()
+      .then(({ data, error }) => { if (!error) setIsAdmin(!!data?.is_admin) })
+  }, [user])
+
+  // Load the pending fake-report queue (RLS returns rows only to admins). The
+  // venue is embedded via the FK join so a report is never dropped just because
+  // its venue isn't in the client `venues` array (keeps badge + queue in sync).
+  const loadFakeReports = useCallback(() => {
+    if (!user) return
+    supabase.from('fake_reports').select('*, venue:venues(*)').eq('status', 'pending')
+      .order('created_at', { ascending: false })
+      .then(({ data, error }) => {
+        if (error) { console.error('Failed to load fake reports', error); return }
+        setFakeReports(data || [])
+      })
+  }, [user])
+
+  useEffect(() => { if (isAdmin) loadFakeReports() }, [isAdmin, loadFakeReports])
+
   // Load collection with venue data joined
   const refreshCollection = useCallback(async () => {
     if (!user) return
@@ -1465,14 +1836,47 @@ export default function App() {
   }
 
   const handleFlag = async (venueId) => {
-    if (!user) return
+    if (!user) return false
     // upsert + ignoreDuplicates so a re-flag after reload doesn't hit the unique constraint
     const { error } = await supabase
       .from('reports')
       .upsert({ user_id: user.id, venue_id: venueId }, { onConflict: 'user_id,venue_id', ignoreDuplicates: true })
-    if (!error) {
-      setReported(prev => (prev.some(r => r.venue_id === venueId) ? prev : [...prev, { venue_id: venueId }]))
-    }
+    if (error) { console.error('Flag failed', error); return false }
+    setReported(prev => (prev.some(r => r.venue_id === venueId) ? prev : [...prev, { venue_id: venueId }]))
+    return true
+  }
+
+  // "This isn't a real matchbook" → fraud claim routed to human review (spec §4)
+  const handleFakeReport = async (venueId, reason) => {
+    if (!user) return false
+    const { error } = await supabase
+      .from('fake_reports')
+      .insert({ reporter_id: user.id, venue_id: venueId, reason: reason || null })
+    if (error) { console.error('Fake report failed', error); return false }
+    // Reflect the new pending report in the admin badge/queue right away.
+    if (isAdmin) loadFakeReports()
+    return true
+  }
+
+  // Admin: Accept — delete the venue; FK cascade clears every collector's copy,
+  // score, report, and the fake_reports rows pointing at it (spec §4).
+  const handleAcceptReport = async (venueId, reportId) => {
+    const { error } = await supabase.from('venues').delete().eq('id', venueId)
+    if (error) { console.error('Accept (delete venue) failed', error); return }
+    setVenues(prev => prev.filter(v => v.id !== venueId))
+    setCollection(prev => prev.filter(c => c.venue_id !== venueId))
+    setReported(prev => prev.filter(r => r.venue_id !== venueId))
+    setFakeReports(prev => prev.filter(r => r.venue_id !== venueId))
+  }
+
+  // Admin: Reject — keep the venue, mark the report resolved (spec §4).
+  const handleRejectReport = async (reportId) => {
+    const { error } = await supabase
+      .from('fake_reports')
+      .update({ status: 'rejected', resolved_by: user.id, resolved_at: new Date().toISOString() })
+      .eq('id', reportId)
+    if (error) { console.error('Reject report failed', error); return }
+    setFakeReports(prev => prev.filter(r => r.id !== reportId))
   }
 
   const handleAdded = (newVenue, collectionRow) => {
@@ -1490,6 +1894,9 @@ export default function App() {
     await supabase.auth.signOut()
     setCollection([])
     setReported([])
+    setIsAdmin(false)
+    setFakeReports([])
+    setShowAdmin(false)
     setShowAuth(true)
   }
 
@@ -1540,6 +1947,15 @@ export default function App() {
           user={user}
           rankedItems={rankedItems}
           onRankingDone={() => { refreshCollection(); setShowSubmit(false); setTab('rankings') }}
+          onSheetOpenChange={setSheetOpen}
+        />
+      ) : showAdmin ? (
+        <AdminQueue
+          reports={fakeReports}
+          venues={venues}
+          onAccept={handleAcceptReport}
+          onReject={handleRejectReport}
+          onBack={() => setShowAdmin(false)}
         />
       ) : (
         <>
@@ -1550,13 +1966,15 @@ export default function App() {
               reported={reported}
               onCollect={handleCollect}
               onFlag={handleFlag}
+              onFakeReport={handleFakeReport}
               onSubmit={() => setShowSubmit(true)}
               venuesError={venuesError}
               onRetry={loadVenues}
+              onSheetOpenChange={setSheetOpen}
             />
           )}
           {tab === 'rankings' && (
-            <Rankings collection={collection} venues={venues} />
+            <Rankings collection={collection} venues={venues} onFlag={handleFlag} onFakeReport={handleFakeReport} onSheetOpenChange={setSheetOpen} />
           )}
           {tab === 'collection' && (
             <Collection
@@ -1571,11 +1989,14 @@ export default function App() {
               collection={enrichedCollection}
               nycTotal={venues.filter(v => v.city === 'NYC').length}
               onSignOut={handleSignOut}
+              isAdmin={isAdmin}
+              pendingReports={fakeReports.length}
+              onOpenAdmin={() => setShowAdmin(true)}
             />
           )}
         </>
       )}
-      <TabBar active={tab} onNav={setTab} />
+      {!showAdmin && !sheetOpen && <TabBar active={tab} onNav={setTab} />}
     </div>
   )
 }

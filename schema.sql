@@ -26,6 +26,21 @@ create policy "Users can update their own profile"
 create policy "Users can insert their own profile"
   on profiles for insert with check (auth.uid() = id);
 
+-- Admins can read every profile (resolves usernames in the moderation queue).
+-- Uses a SECURITY DEFINER function so the policy can't recurse on profiles.
+create or replace function public.is_admin()
+returns boolean
+language sql
+security definer
+stable
+set search_path = ''
+as $$
+  select coalesce((select is_admin from public.profiles where id = auth.uid()), false);
+$$;
+
+create policy "Admins can view all profiles"
+  on profiles for select using (public.is_admin());
+
 -- Auto-create profile on signup.
 -- Must NEVER abort the auth.users insert: a username collision is resolved by
 -- suffixing rather than raising. search_path is pinned and names are qualified
