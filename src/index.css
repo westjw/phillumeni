@@ -1,0 +1,34 @@
+/* Global polish — applies app-wide */
+* {
+  -webkit-tap-highlight-color: transparent; /* no gray flash on tap (iOS) */
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #FAFAF8;
+  overscroll-behavior-y: none;              /* no rubber-band bounce */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Subtle press feedback on real buttons (CTAs, options) */
+button {
+  transition: transform .06s ease, opacity .15s ease;
+}
+button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+img {
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+/* Hide scrollbars for a cleaner mobile surface (scroll still works) */
+::-webkit-scrollbar {
+  display: none;
+}
+* {
+  scrollbar-width: none;
+}

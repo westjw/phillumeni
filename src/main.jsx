@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { registerSW } from 'virtual:pwa-register'
+import './index.css'
 import App from './App.jsx'
 
 // iOS standalone PWAs won't notice a new deploy on their own and get stuck on a

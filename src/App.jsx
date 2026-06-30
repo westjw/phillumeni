@@ -97,11 +97,12 @@ const Card = ({ children, style = {} }) => (
   <div style={{ background: C.card, borderRadius: 14, border: `0.5px solid ${C.border}`, boxShadow: '0 1px 6px rgba(0,0,0,0.06)', ...style }}>{children}</div>
 )
 
+// Clean header that sits below the real iOS status bar (no more fake "9:41").
+// In a standalone PWA env(safe-area-inset-top) is the notch height; in a browser
+// it resolves to 0, so the max() keeps a small gap either way.
 const SBar = ({ title, light }) => (
-  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 22px 0', fontSize: 12, flexShrink: 0, color: light ? 'rgba(255,255,255,0.4)' : C.muted }}>
-    <span style={{ fontWeight: 500 }}>9:41</span>
-    {title && <span style={{ fontWeight: 700, fontSize: 13, color: light ? '#fff' : C.text, letterSpacing: '-.2px' }}>{title}</span>}
-    <span style={{ display: 'flex', gap: 4 }}><i className="ti ti-wifi" style={{ fontSize: 12 }} /><i className="ti ti-battery-2" style={{ fontSize: 12 }} /></span>
+  <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'flex-end', padding: 'max(12px, env(safe-area-inset-top)) 22px 10px', flexShrink: 0, minHeight: 22 }}>
+    {title && <span style={{ fontWeight: 700, fontSize: 16, color: light ? '#fff' : C.text, letterSpacing: '-.3px' }}>{title}</span>}
   </div>
 )
 
@@ -343,7 +344,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}>
       {/* Top bar */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px 0', flexShrink: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'max(10px, env(safe-area-inset-top)) 16px 6px', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <MbIcon size={26} />
           <span style={{ fontFamily: 'Georgia, serif', fontSize: 17, fontWeight: 300, color: C.text, letterSpacing: '-.3px' }}>phillumeni</span>
@@ -2019,10 +2020,7 @@ function AuthScreen({ onDone }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#1A1918' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '14px 22px 0', fontSize: 12, color: 'rgba(255,255,255,0.3)' }}>
-        <span>9:41</span>
-        <span style={{ display: 'flex', gap: 4 }}><i className="ti ti-wifi" style={{ fontSize: 12 }} /><i className="ti ti-battery-2" style={{ fontSize: 12 }} /></span>
-      </div>
+      <div style={{ paddingTop: 'max(12px, env(safe-area-inset-top))', flexShrink: 0 }} />
 
       <div style={{ flex: 1, padding: '24px 24px 0', overflowY: 'auto' }}>
         <div style={{ marginBottom: 28, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
@@ -2105,10 +2103,7 @@ function ResetPassword({ onDone }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#1A1918' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '14px 22px 0', fontSize: 12, color: 'rgba(255,255,255,0.3)' }}>
-        <span>9:41</span>
-        <span style={{ display: 'flex', gap: 4 }}><i className="ti ti-wifi" style={{ fontSize: 12 }} /><i className="ti ti-battery-2" style={{ fontSize: 12 }} /></span>
-      </div>
+      <div style={{ paddingTop: 'max(12px, env(safe-area-inset-top))', flexShrink: 0 }} />
       <div style={{ flex: 1, padding: '24px 24px 0', overflowY: 'auto' }}>
         <div style={{ marginBottom: 28, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
           <MbIcon size={60} />
@@ -2144,7 +2139,7 @@ function TabBar({ active, onNav }) {
     { id: 'profile', icon: 'ti-user', l: 'Profile' },
   ]
   return (
-    <div style={{ borderTop: `0.5px solid ${C.border}`, display: 'flex', padding: '9px 0 20px', flexShrink: 0, background: C.card }}>
+    <div style={{ borderTop: `0.5px solid ${C.border}`, display: 'flex', padding: '9px 0 max(14px, env(safe-area-inset-bottom))', flexShrink: 0, background: C.card }}>
       {tabs.map(t => (
         <div key={t.id} onClick={() => onNav(t.id)} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, cursor: 'pointer' }}>
           <div style={{ width: 30, height: 28, borderRadius: 8, background: active === t.id ? C.amberBg : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background .15s' }}>
