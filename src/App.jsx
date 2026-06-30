@@ -978,12 +978,6 @@ function AuthScreen({ onDone }) {
           {loading ? 'Please wait…' : mode === 'signup' ? 'Create account' : 'Sign in'}
         </button>
 
-        {mode === 'signup' && (
-          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', textAlign: 'center', lineHeight: 1.5, marginBottom: 16 }}>
-            Check your email to confirm your account after signing up
-          </div>
-        )}
-
         <div style={{ textAlign: 'center', fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
           {mode === 'signup' ? 'Already have an account? ' : 'New here? '}
           <span onClick={() => { setMode(mode === 'signup' ? 'login' : 'signup'); setError(''); setNotice('') }} style={{ color: C.amber, cursor: 'pointer', fontWeight: 700 }}>
