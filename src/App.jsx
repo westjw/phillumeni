@@ -18,6 +18,13 @@ const cityLabel = (id) => (CITIES.find(c => c.id === id) || CITIES[0]).label
 
 // Title-case a Mapbox poi_category (e.g. "fast food restaurant" -> "Fast Food Restaurant")
 const titleCase = (s) => (s ? String(s).replace(/\b\w/g, (c) => c.toUpperCase()) : s)
+
+// "Column not migrated yet" — Postgres reports an undefined column as 42703, but
+// PostgREST's schema-cache check reports it as PGRST204 ("Could not find the 'X'
+// column of 'Y' in the schema cache"). Treat both (and any schema-cache miss) as
+// the column being absent, so the app degrades gracefully on a partial migration.
+const isMissingColumn = (err) =>
+  !!err && (err.code === '42703' || err.code === 'PGRST204' || /schema cache/i.test(err.message || ''))
 const venueInitials = (name) => (name || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('')
 
 function eloUpdate(scoreA, scoreB, aWon) {
@@ -42,8 +49,6 @@ const C = {
 
 const pinColor = (v) => {
   if (v.status === 'closed') return C.muted
-  if (v.sources?.length >= 2) return C.amber
-  if (!v.is_open) return '#9C9990'
   return C.green
 }
 
@@ -137,7 +142,7 @@ function styleMarkerEl(el, v, isSelected) {
     `box-shadow:0 ${isSelected ? 4 : 2}px ${isSelected ? 16 : 8}px rgba(0,0,0,${isSelected ? 0.4 : 0.25})`,
     'transition:all .15s',
   ].join(';')
-  el.textContent = v.status === 'closed' ? '✕' : (v.is_open ? '✦' : '·')
+  el.textContent = v.status === 'closed' ? '✕' : '✦'
 }
 
 function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVenue, filter }) {
@@ -295,15 +300,6 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
           selectedVenue={selected}
           filter={filter}
         />
-        {/* Filter chips */}
-        <div style={{ position: 'absolute', bottom: 10, left: 0, right: 0, display: 'flex', gap: 6, padding: '0 10px', overflowX: 'auto' }}>
-          {[{ id: 'all', l: 'All' }, { id: 'open', l: 'Open now' }, { id: 'multi', l: '2+ sources' }].map(f => (
-            <button key={f.id} onClick={() => { setFilter(f.id); setSelected(null) }}
-              style={{ flexShrink: 0, fontSize: 12, fontWeight: 600, padding: '5px 13px', borderRadius: 99, border: '1.5px solid', cursor: 'pointer', boxShadow: '0 1px 6px rgba(0,0,0,0.12)', transition: 'all .15s', background: filter === f.id ? C.dark : '#fff', color: filter === f.id ? '#fff' : C.sec, borderColor: filter === f.id ? C.dark : C.border }}>
-              {f.l}
-            </button>
-          ))}
-        </div>
       </div>
 
       {/* Sheet */}
@@ -325,9 +321,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
               </div>
             </div>
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 10 }}>
-              {selected.status === 'closed'
-                ? <Tag label="Closed" bg={C.redBg} color={C.red} />
-                : <Tag label={selected.is_open ? 'Open now' : 'Closed'} bg={selected.is_open ? C.greenBg : C.surface} color={selected.is_open ? C.green : C.muted} />}
+              {selected.status === 'closed' && <Tag label="Closed" bg={C.redBg} color={C.red} />}
               <Tag label={selected.type || 'Spot'} bg={C.surface} color={C.sec} />
               {selected.status !== 'closed' && (selected.sources || []).length >= 2 && <Tag label={`${selected.sources.length} sources`} bg={C.amberBg} color={C.amber} />}
             </div>
@@ -377,7 +371,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
                   <div style={{ fontSize: 13, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v.name}</div>
                   <div style={{ fontSize: 11, color: C.muted }}>{v.neighborhood || v.city}</div>
                 </div>
-                <Tag label={v.is_open ? 'Open' : 'Closed'} bg={v.is_open ? C.greenBg : C.surface} color={v.is_open ? C.green : C.muted} />
+                {v.type && <Tag label={v.type} bg={C.surface} color={C.sec} />}
               </div>
             ))}
             {listed.length === 0 && (
@@ -678,7 +672,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
       const { data: existing, error: existErr } = await supabase
         .from('venues').select('*').eq('mapbox_id', picked.mapbox_id).maybeSingle()
       if (existErr) {
-        if (existErr.code === '42703' || /mapbox_id/.test(existErr.message || '')) {
+        if (isMissingColumn(existErr) || /mapbox_id/.test(existErr.message || '')) {
           dedupOn = false // column not migrated yet → fall back to a plain insert
         } else {
           throw existErr
@@ -755,9 +749,9 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
 
     // Add to collection — capture the real row (serial id) and surface errors.
     // First-ever ranked venue gets score 7.5 automatically (spec §3).
-    // photos[] (006) and score (007) may not be migrated yet — on an
-    // undefined-column error (42703) strip the offending key and retry, the
-    // same column-tolerance contract handleAdd uses for mapbox_id.
+    // photos[] (006) and score (007) may not be migrated yet — on a missing-column
+    // error strip the offending key and retry, the same column-tolerance contract
+    // handleAdd uses for mapbox_id.
     const isFirstRanked = rankedItems.length === 0
     const cover = photoUrls[0] || null
     const insertRow = { user_id: user.id, venue_id: venue.id, photo_url: cover, photos: photoUrls, score: isFirstRanked ? 7.5 : null }
@@ -765,10 +759,12 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
     for (let attempt = 0; attempt < 3; attempt++) {
       ;({ data: collectionRow, error: collErr } = await supabase
         .from('collections').insert(insertRow).select().single())
-      if (!collErr || collErr.code !== '42703') break
+      if (!collErr || !isMissingColumn(collErr)) break
       const m = collErr.message || ''
       if (/photos/.test(m) && 'photos' in insertRow) delete insertRow.photos
       else if (/score/.test(m) && 'score' in insertRow) delete insertRow.score
+      else if ('photos' in insertRow) delete insertRow.photos       // unnamed miss → drop newest cols
+      else if ('score' in insertRow) delete insertRow.score
       else break
     }
 
@@ -865,12 +861,12 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
         verified: false,
         added_manually: true,
       }
-      // added_manually (007) may not be migrated — strip on 42703 and retry.
+      // added_manually (007) may not be migrated — strip on a missing-column error.
       let venue = null
       for (let attempt = 0; attempt < 2; attempt++) {
         const { data, error } = await supabase.from('venues').insert(venueRow).select().single()
         if (!error) { venue = data; break }
-        if (error.code === '42703' && /added_manually/.test(error.message || '') && 'added_manually' in venueRow) {
+        if (isMissingColumn(error) && 'added_manually' in venueRow) {
           delete venueRow.added_manually
           continue
         }
