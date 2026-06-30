@@ -13,8 +13,8 @@ create table profiles (
 
 alter table profiles enable row level security;
 
-create policy "Profiles are viewable by everyone"
-  on profiles for select using (true);
+create policy "Users can view their own profile"
+  on profiles for select using (auth.uid() = id);
 
 create policy "Users can update their own profile"
   on profiles for update using (auth.uid() = id);
@@ -110,8 +110,8 @@ create table collections (
 
 alter table collections enable row level security;
 
-create policy "Users can view all collections"
-  on collections for select using (true);
+create policy "Users can view their own collections"
+  on collections for select using (auth.uid() = user_id);
 
 create policy "Users can manage their own collections"
   on collections for insert with check (auth.uid() = user_id);
@@ -130,8 +130,8 @@ create table reports (
 
 alter table reports enable row level security;
 
-create policy "Reports viewable by everyone"
-  on reports for select using (true);
+create policy "Users can view their own reports"
+  on reports for select using (auth.uid() = user_id);
 
 create policy "Authenticated users can report"
   on reports for insert with check (auth.uid() = user_id);
@@ -173,8 +173,8 @@ create table follows (
 
 alter table follows enable row level security;
 
-create policy "Follows viewable by everyone"
-  on follows for select using (true);
+create policy "Users can view their own follows"
+  on follows for select using (auth.uid() = follower_id or auth.uid() = following_id);
 
 create policy "Users manage their own follows"
   on follows for insert with check (auth.uid() = follower_id);
