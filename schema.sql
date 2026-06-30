@@ -347,3 +347,27 @@ $$;
 
 revoke execute on function search_collectors(text) from public;
 grant execute on function search_collectors(text) to authenticated;
+
+-- Friends rankings: per-venue AVG(score) across the people I follow (spec §3).
+-- Aggregate + ranker count only, never a name. Authenticated-only. NOTE: with a
+-- single ranker the average equals that person's score (no name); add
+-- `having count(*) >= 2` for k-anonymity if that matters.
+create or replace function friends_rankings()
+returns table (venue_id integer, avg_score numeric, rankers integer)
+language sql
+security definer
+stable
+set search_path = ''
+as $$
+  select c.venue_id,
+         round(avg(c.score), 1) as avg_score,
+         count(*)::int as rankers
+  from public.collections c
+  where c.user_id in (select following_id from public.follows where follower_id = auth.uid())
+    and c.score is not null
+  group by c.venue_id
+  order by avg_score desc, rankers desc;
+$$;
+
+revoke execute on function friends_rankings() from public;
+grant execute on function friends_rankings() to authenticated;

@@ -1377,6 +1377,25 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onSheetOpenChange 
     .sort((a, b) => b.score - a.score)
     .map((item, idx) => ({ ...item, rank: idx + 1 }))
 
+  // Friends rankings: per-venue avg score across people you follow (RPC; the rows
+  // come back already sorted best-first). null = loading, [] = loaded empty.
+  const [friendsRows, setFriendsRows] = useState(null)
+  useEffect(() => {
+    if (tab !== 'friends') return
+    let cancelled = false
+    setFriendsRows(null)
+    supabase.rpc('friends_rankings').then(({ data, error }) => {
+      if (cancelled) return
+      setFriendsRows(error ? [] : (data || []))
+    })
+    return () => { cancelled = true }
+  }, [tab])
+
+  const friendsRanked = (friendsRows || [])
+    .map(r => ({ ...r, venue: venueMap[r.venue_id] }))
+    .filter(r => r.venue)
+    .map((r, idx) => ({ ...r, rank: idx + 1 }))
+
   // Pale medal fills with dark, hue-matched digits (matches the mockup).
   const rankCircle = (n) => ({
     width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -1427,11 +1446,41 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onSheetOpenChange 
               <div style={{ height: 24 }} />
             </div>
           )
+        ) : tab === 'friends' ? (
+          (friendsRows === null || (friendsRows.length > 0 && friendsRanked.length === 0)) ? (
+            // null = still loading; rows present but unresolved = venues not loaded yet
+            <div style={{ textAlign: 'center', padding: '4rem 1.5rem', color: C.muted, fontSize: 13 }}>Loading…</div>
+          ) : friendsRanked.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>👥</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>No friends rankings yet</div>
+              <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>Follow collectors from your Profile — once they've ranked spots, your friends' combined list shows here.</div>
+            </div>
+          ) : (
+            <div style={{ padding: '4px 16px' }}>
+              {friendsRanked.map(item => (
+                <div key={item.venue_id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}` }}>
+                  <div style={rankCircle(item.rank)}>{item.rank}</div>
+                  <div style={{ width: 42, height: 42, borderRadius: 11, background: item.venue.bg_color || C.dark, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0, letterSpacing: '-.2px' }}>
+                    {venueInitials(item.venue.name)}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
+                    <div style={{ fontSize: 12, color: C.muted }}>
+                      {item.venue.neighborhood || item.venue.city} · {item.rankers} {item.rankers === 1 ? 'friend' : 'friends'}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: C.amber, flexShrink: 0 }}>{Number(item.avg_score).toFixed(1)}</div>
+                </div>
+              ))}
+              <div style={{ height: 24 }} />
+            </div>
+          )
         ) : (
           <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
             <div style={{ fontSize: 40, marginBottom: 12 }}>🔜</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>Coming soon</div>
-            <div style={{ fontSize: 13, color: C.muted }}>Build your collection to unlock {tab} rankings</div>
+            <div style={{ fontSize: 13, color: C.muted }}>City and World rankings open up as more people collect</div>
           </div>
         )}
       </div>
