@@ -707,16 +707,22 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
       }
 
       // Add to collection — capture the real row (serial id) and surface errors.
-      // photos[] may not be migrated yet (006); fall back to just the cover url.
       // First-ever ranked venue gets score 7.5 automatically (spec §3).
+      // photos[] (006) and score (007) may not be migrated yet — on an
+      // undefined-column error (42703) strip the offending key and retry, the
+      // same column-tolerance contract handleAdd uses for mapbox_id.
       const isFirstRanked = rankedItems.length === 0
       const cover = photoUrls[0] || null
-      const baseRow = { user_id: user.id, venue_id: venue.id, photo_url: cover, score: isFirstRanked ? 7.5 : null }
-      let { data: collectionRow, error: collErr } = await supabase
-        .from('collections').insert({ ...baseRow, photos: photoUrls }).select().single()
-      if (collErr && (collErr.code === '42703' || /photos/.test(collErr.message || ''))) {
+      const insertRow = { user_id: user.id, venue_id: venue.id, photo_url: cover, photos: photoUrls, score: isFirstRanked ? 7.5 : null }
+      let collectionRow = null, collErr = null
+      for (let attempt = 0; attempt < 3; attempt++) {
         ;({ data: collectionRow, error: collErr } = await supabase
-          .from('collections').insert(baseRow).select().single())
+          .from('collections').insert(insertRow).select().single())
+        if (!collErr || collErr.code !== '42703') break
+        const m = collErr.message || ''
+        if (/photos/.test(m) && 'photos' in insertRow) delete insertRow.photos
+        else if (/score/.test(m) && 'score' in insertRow) delete insertRow.score
+        else break
       }
 
       let savedRow = collectionRow
@@ -750,7 +756,12 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
               savedRow = updated || null
             }
           } else {
-            savedRow = null
+            // No new photos — still read the row back so an already-collected
+            // but UNRANKED venue (score null) can be offered the ranking flow.
+            const { data: existingRow } = await supabase
+              .from('collections').select('*')
+              .eq('user_id', user.id).eq('venue_id', venue.id).maybeSingle()
+            savedRow = existingRow || null
           }
         } else {
           throw collErr
@@ -758,6 +769,8 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
       }
 
       setAddedVenue(venue)
+      // Offer ranking when the venue isn't the user's first ranked one and its
+      // collection row currently has no score (newly added, or never ranked).
       setNeedsRanking(!isFirstRanked && !!savedRow && savedRow.score == null)
       onAdded(venue, savedRow || null)
       sessionRef.current = '' // start a fresh billing session for the next submit
@@ -769,14 +782,44 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
     setAdding(false)
   }
 
-  const displayStep = Math.min(step, 3)
+  // "Skip for now" from the step-3 confirmation: never leave the new venue at
+  // score null. Seed it with the median of the ranked list (the score its first
+  // comparison would have started from), then bow out.
+  const skipRanking = async () => {
+    if (addedVenue) {
+      const medianScore = rankedItems[Math.floor((rankedItems.length - 1) / 2)]?.score
+      const { error } = await supabase.from('collections')
+        .update({ score: Math.round(((medianScore ?? 7.5)) * 10) / 10 })
+        .eq('user_id', user.id).eq('venue_id', addedVenue.id)
+      if (error) { // don't navigate away on a failed write — keep the user here to retry
+        console.error('Skip-ranking score write failed', error)
+        setAddErr('Couldn’t save — try again.')
+        return
+      }
+    }
+    ;(onRankingDone || onBack)()
+  }
+
   const Steps = () => (
     <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
       {[1, 2, 3].map(s => (
-        <div key={s} style={{ height: 4, borderRadius: 2, width: s === displayStep ? 28 : 12, background: s === displayStep ? C.dark : s < displayStep ? C.amber : C.border, transition: 'all .2s' }} />
+        <div key={s} style={{ height: 4, borderRadius: 2, width: s === step ? 28 : 12, background: s === step ? C.dark : s < step ? C.amber : C.border, transition: 'all .2s' }} />
       ))}
     </div>
   )
+
+  // Step 4 is the comparison flow — render it as a full-screen replacement so
+  // Submit's own status bar / Back button / progress dots don't double up.
+  if (step === 4 && addedVenue) {
+    return (
+      <ComparisonFlow
+        newVenue={addedVenue}
+        rankedItems={rankedItems}
+        user={user}
+        onDone={() => (onRankingDone || onBack)()}
+      />
+    )
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: C.bg }}>
@@ -904,8 +947,9 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
             </div>
             {needsRanking ? (
               <>
+                {addErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 10, lineHeight: 1.4 }}>{addErr}</div>}
                 <PrimaryBtn onClick={() => setStep(4)} style={{ marginBottom: 10 }}>Rank this matchbook →</PrimaryBtn>
-                <OutlineBtn onClick={onBack}>Skip for now</OutlineBtn>
+                <OutlineBtn onClick={skipRanking}>Skip for now</OutlineBtn>
               </>
             ) : (
               <>
@@ -915,14 +959,6 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
             )}
           </div>
         )}
-        {step === 4 && addedVenue && (
-          <ComparisonFlow
-            newVenue={addedVenue}
-            rankedItems={rankedItems}
-            user={user}
-            onDone={() => (onRankingDone || onBack)()}
-          />
-        )}
       </div>
     </div>
   )
@@ -930,50 +966,107 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
 
 // ─── COMPARISON FLOW ─────────────────────────────────────
 // Binary-search insertion into the user's ranked list with Elo updates per tap.
+// Invariant: the new venue ALWAYS leaves this screen with a non-null score —
+// completing writes the Elo result; skipping/abandoning persists the fair
+// baseline (the opponent's score) so a ranked submission can never go missing.
 function ComparisonFlow({ newVenue, rankedItems, user, onDone }) {
+  // Opponents = the user's existing ranked list, defensively excluding the new
+  // venue itself (it must never compare against itself).
+  const opponents = useMemo(
+    () => rankedItems.filter(i => i.venue_id !== newVenue.id),
+    [rankedItems, newVenue.id]
+  )
+
   const [lo, setLo] = useState(0)
-  const [hi, setHi] = useState(rankedItems.length - 1)
+  const [hi, setHi] = useState(opponents.length - 1)
   const [doneCount, setDoneCount] = useState(0)
   const [newScore, setNewScore] = useState(null)
   const [liveScores, setLiveScores] = useState({})
   const [saving, setSaving] = useState(false)
+  const [writeErr, setWriteErr] = useState('')
+  const savingRef = useRef(false)   // synchronous re-entrancy lock (state lags a render)
+  const finishedRef = useRef(false) // guarantees onDone + baseline-write happen once
 
-  const totalSteps = Math.max(1, Math.ceil(Math.log2(rankedItems.length + 1)))
+  const totalSteps = Math.max(1, Math.ceil(Math.log2(opponents.length + 1)))
   const mid = Math.floor((lo + hi) / 2)
-  const opponent = rankedItems[mid]
-
-  if (!opponent || lo > hi) { onDone(); return null }
-
-  const oppScore = liveScores[opponent.venue_id] ?? (opponent.score ?? 7.5)
+  const opponent = opponents[mid]
+  const oppScore = opponent ? (liveScores[opponent.venue_id] ?? (opponent.score ?? 7.5)) : 7.5
   const curNewScore = newScore ?? oppScore
+  const finished = !opponent || lo > hi
+
+  // Finish exactly once: ensure the new venue has a persisted score, then exit.
+  // newScore is null only if the user never completed a tap — seed the baseline.
+  // finishedRef is claimed synchronously to block double-entry but RELEASED if the
+  // baseline write fails, so the venue is never orphaned at score=null with no retry.
+  const finish = useCallback(async (scoreSoFar) => {
+    if (finishedRef.current) return
+    finishedRef.current = true
+    if (scoreSoFar == null) {
+      const { error } = await supabase.from('collections')
+        .update({ score: Math.round((oppScore ?? 7.5) * 10) / 10 })
+        .eq('user_id', user.id).eq('venue_id', newVenue.id)
+      if (error) {
+        finishedRef.current = false // release so the user can retry
+        console.error('Baseline score write failed', error)
+        setWriteErr('Couldn’t save — tap again.')
+        return
+      }
+    }
+    onDone()
+  }, [oppScore, user.id, newVenue.id, onDone])
+
+  // Terminal condition (list exhausted) — run as an effect, never during render.
+  useEffect(() => {
+    if (finished) finish(newScore)
+  }, [finished]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (finished) return null
+
   const oppRank = mid + 1
 
   const pick = async (newWon) => {
-    if (saving) return
+    if (savingRef.current || finishedRef.current) return
+    savingRef.current = true
     setSaving(true)
+    setWriteErr('')
     const [updNew, updOpp] = eloUpdate(curNewScore, oppScore, newWon)
-    const newLo = newWon ? lo : mid + 1
-    const newHi = newWon ? mid - 1 : hi
 
-    await Promise.all([
+    // Only the two collections.score writes are required (supabase-js resolves
+    // with an { error } object rather than rejecting). On failure, do NOT advance
+    // the search or mutate score state — surface an error and let the user retry.
+    const results = await Promise.all([
       supabase.from('collections').update({ score: updNew }).eq('user_id', user.id).eq('venue_id', newVenue.id),
       supabase.from('collections').update({ score: updOpp }).eq('user_id', user.id).eq('venue_id', opponent.venue_id),
-      supabase.from('comparisons').insert({
-        user_id: user.id,
-        winner_venue_id: newWon ? newVenue.id : opponent.venue_id,
-        loser_venue_id: newWon ? opponent.venue_id : newVenue.id,
-      }),
     ])
+    const failed = results.find(r => r && r.error)
+    savingRef.current = false
+    setSaving(false)
+    if (failed) {
+      console.error('Comparison write failed', failed.error)
+      setWriteErr('Couldn’t save that — check your connection and tap again.')
+      return
+    }
+
+    // The comparisons audit log is OPTIONAL (spec §3) — best-effort, fire-and-forget
+    // so a missing/unmigrated comparisons table can never block ranking.
+    supabase.from('comparisons').insert({
+      user_id: user.id,
+      winner_venue_id: newWon ? newVenue.id : opponent.venue_id,
+      loser_venue_id: newWon ? opponent.venue_id : newVenue.id,
+    }).then(({ error }) => { if (error) console.warn('comparisons log skipped:', error.message) })
 
     setNewScore(updNew)
     setLiveScores(prev => ({ ...prev, [opponent.venue_id]: updOpp }))
     setDoneCount(n => n + 1)
-    setSaving(false)
 
-    if (newLo > newHi) { onDone(); return }
+    const newLo = newWon ? lo : mid + 1
+    const newHi = newWon ? mid - 1 : hi
+    if (newLo > newHi) { finish(updNew); return } // already scored — won't re-write
     setLo(newLo)
     setHi(newHi)
   }
+
+  const skip = () => { if (!savingRef.current) finish(newScore) }
 
   const newIni = venueInitials(newVenue.name)
   const oppIni = venueInitials(opponent.venue?.name || '')
@@ -987,11 +1080,11 @@ function ComparisonFlow({ newVenue, rankedItems, user, onDone }) {
 
         <div style={{ display: 'flex', gap: 6, marginBottom: 24 }}>
           {Array.from({ length: totalSteps }, (_, i) => (
-            <div key={i} style={{ height: 4, width: i < doneCount ? 24 : (i === doneCount ? 28 : 12), borderRadius: 2, background: i < doneCount ? C.amber : (i === doneCount ? C.dark : C.border), transition: 'all .2s' }} />
+            <div key={i} style={{ height: 4, width: i === doneCount ? 28 : (i < doneCount ? 24 : 12), borderRadius: 2, background: i <= doneCount ? C.amber : C.border, transition: 'all .2s' }} />
           ))}
         </div>
 
-        <div onClick={() => !saving && pick(true)}
+        <div onClick={() => pick(true)}
           style={{ width: '100%', background: C.amberBg, border: `2px solid ${C.amberBd}`, borderRadius: 20, padding: '28px 16px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.7 : 1, marginBottom: 14, position: 'relative' }}>
           <div style={{ position: 'absolute', top: -13, left: '50%', transform: 'translateX(-50%)', background: C.amberBg, border: `1.5px solid ${C.amberBd}`, borderRadius: 99, padding: '3px 16px', fontSize: 11, fontWeight: 800, color: C.amber, letterSpacing: '.8px', whiteSpace: 'nowrap' }}>NEW</div>
           <div style={{ width: 72, height: 72, borderRadius: '50%', background: '#1A1918', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, fontWeight: 700, color: '#fff', marginBottom: 12 }}>{newIni}</div>
@@ -1001,15 +1094,17 @@ function ComparisonFlow({ newVenue, rankedItems, user, onDone }) {
 
         <div style={{ fontSize: 13, fontWeight: 700, color: C.muted, letterSpacing: '1px', marginBottom: 14 }}>VS</div>
 
-        <div onClick={() => !saving && pick(false)}
-          style={{ width: '100%', background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 20, padding: '28px 16px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.7 : 1, marginBottom: 20, position: 'relative' }}>
+        <div onClick={() => pick(false)}
+          style={{ width: '100%', background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 20, padding: '28px 16px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.7 : 1, marginBottom: 16, position: 'relative' }}>
           <div style={{ position: 'absolute', top: -13, left: '50%', transform: 'translateX(-50%)', background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 99, padding: '3px 16px', fontSize: 11, fontWeight: 800, color: C.muted, letterSpacing: '.8px', whiteSpace: 'nowrap' }}>CURRENTLY #{oppRank}</div>
           <div style={{ width: 72, height: 72, borderRadius: '50%', background: opponent.venue?.bg_color || '#3D2B1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, fontWeight: 700, color: '#fff', marginBottom: 12 }}>{oppIni}</div>
           <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 4, textAlign: 'center' }}>{opponent.venue?.name || ''}</div>
           <div style={{ fontSize: 13, color: C.sec }}>{opponent.venue?.neighborhood || opponent.venue?.city || ''}</div>
         </div>
 
-        <button onClick={onDone} style={{ background: 'none', border: 'none', fontSize: 14, color: C.muted, cursor: 'pointer', textDecoration: 'underline', marginBottom: 10 }}>
+        {writeErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, textAlign: 'center', lineHeight: 1.4 }}>{writeErr}</div>}
+
+        <button onClick={skip} disabled={saving} style={{ background: 'none', border: 'none', fontSize: 14, color: C.muted, cursor: saving ? 'default' : 'pointer', textDecoration: 'underline', marginBottom: 10 }}>
           Too close to call — skip
         </button>
         <div style={{ fontSize: 11, color: C.muted, textAlign: 'center', lineHeight: 1.5 }}>Each tap also runs an Elo score update on both venues</div>
@@ -1022,17 +1117,21 @@ function ComparisonFlow({ newVenue, rankedItems, user, onDone }) {
 function Rankings({ collection, venues }) {
   const [tab, setTab] = useState('mine')
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
+  // Attach venue and drop venue-less rows BEFORE numbering, so rank is always
+  // contiguous with the rendered list (no gaps if a venue hasn't loaded yet).
   const ranked = collection
     .filter(i => i.score != null)
-    .sort((a, b) => b.score - a.score)
-    .map((item, idx) => ({ ...item, venue: venueMap[item.venue_id], rank: idx + 1 }))
+    .map(item => ({ ...item, venue: venueMap[item.venue_id] }))
     .filter(i => i.venue)
+    .sort((a, b) => b.score - a.score)
+    .map((item, idx) => ({ ...item, rank: idx + 1 }))
 
+  // Pale medal fills with dark, hue-matched digits (matches the mockup).
   const rankCircle = (n) => ({
     width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
     fontSize: 13, fontWeight: 700, flexShrink: 0,
-    background: n === 1 ? '#D4A017' : n === 2 ? '#B0B0B0' : n === 3 ? '#B87333' : C.surface,
-    color: n <= 3 ? '#fff' : C.muted,
+    background: n === 1 ? '#F5E0A8' : n === 2 ? '#E2E2E2' : n === 3 ? '#E8C2A0' : C.surface,
+    color: n === 1 ? '#7A5A0A' : n === 2 ? '#737373' : n === 3 ? '#7A4A1A' : C.muted,
   })
 
   return (

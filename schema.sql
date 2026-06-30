@@ -123,6 +123,11 @@ create policy "Users can view their own collections"
 create policy "Users can manage their own collections"
   on collections for insert with check (auth.uid() = user_id);
 
+-- Ranking (Elo score) and the multi-photo re-collect path both UPDATE the
+-- user's own collection rows — without this policy those writes silently no-op.
+create policy "Users can update their own collections"
+  on collections for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
 create policy "Users can delete their own collections"
   on collections for delete using (auth.uid() = user_id);
 
