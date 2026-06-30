@@ -622,6 +622,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
   const [addErr, setAddErr] = useState('')
   const [addedVenue, setAddedVenue] = useState(null)
   const [needsRanking, setNeedsRanking] = useState(false)
+  const [alreadyHave, setAlreadyHave] = useState(false) // venue was already in your collection
   // Manual entry ("can't find it") — spec §2
   const [showManual, setShowManual] = useState(false)
   const [manualCity, setManualCity] = useState('NYC')
@@ -839,7 +840,9 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
     }
 
     let savedRow = collectionRow
+    let alreadyHave = false
     if (collErr) {
+      if (collErr.code === '23505') alreadyHave = true // you already collected this venue
       // unique(user_id, venue_id): already collected. Treat as success, but merge
       // any newly-uploaded photos into the existing row.
       if (collErr.code === '23505') {
@@ -883,6 +886,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
     }
 
     setAddedVenue(venue)
+    setAlreadyHave(alreadyHave)
     // Offer ranking when the venue isn't the user's first ranked one and its
     // collection row currently has no score (newly added, or never ranked).
     setNeedsRanking(!isFirstRanked && !!savedRow && savedRow.score == null)
@@ -932,26 +936,35 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
         verified: false,
         added_manually: true,
       }
-      // added_manually (007) may not be migrated — strip on a missing-column error.
+      // Dedup: don't create a second venue for a place already on the map. Match
+      // by name (case-insensitive) within the city — covers both a re-add and a
+      // venue someone else already submitted (search or manual).
       let venue = null
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const { data, error } = await supabase.from('venues').insert(venueRow).select().single()
-        if (!error) { venue = data; break }
-        if (isMissingColumn(error) && 'added_manually' in venueRow) {
-          delete venueRow.added_manually
-          continue
+      let inserted = false
+      const { data: dupes } = await supabase
+        .from('venues').select('*').eq('city', manualCity).ilike('name', name).limit(1)
+      if (dupes && dupes.length) venue = dupes[0]
+      if (venue?.status === 'closed') throw new Error('That spot is marked closed and can’t be collected.')
+
+      if (!venue) {
+        // added_manually (007) may not be migrated — strip on a missing-column error.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const { data, error } = await supabase.from('venues').insert(venueRow).select().single()
+          if (!error) { venue = data; inserted = true; break }
+          if (isMissingColumn(error) && 'added_manually' in venueRow) {
+            delete venueRow.added_manually
+            continue
+          }
+          throw error
         }
-        throw error
       }
 
       setPicked({ name, address, manual: true })
       try {
         await collectVenue(venue)
       } catch (collectErr) {
-        // The venue row is already committed but uncollected. Manual venues have
-        // no mapbox_id, so a retry would duplicate it — roll it back first (the
-        // creator-delete RLS policy permits deleting one's own unverified venue).
-        await supabase.from('venues').delete().eq('id', venue.id)
+        // Only roll back a venue WE just created (an existing/deduped one stays).
+        if (inserted) await supabase.from('venues').delete().eq('id', venue.id)
         throw collectErr
       }
       setShowManual(false)
@@ -1131,10 +1144,12 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
 
         {step === 3 && (
           <div style={{ textAlign: 'center', padding: '20px 0' }}>
-            <div style={{ fontSize: 64, marginBottom: 16 }}>🔥</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: C.text, letterSpacing: '-.4px', marginBottom: 8 }}>It's on the map.</div>
+            <div style={{ fontSize: 64, marginBottom: 16 }}>{alreadyHave ? '✓' : '🔥'}</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.text, letterSpacing: '-.4px', marginBottom: 8 }}>{alreadyHave ? 'You already have this one.' : "It's on the map."}</div>
             <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, marginBottom: 24 }}>
-              <span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is live and in your collection. Everyone nearby can find it.
+              {alreadyHave
+                ? <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is already in your collection — no need to add it twice.</>
+                : <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is live and in your collection. Everyone nearby can find it.</>}
             </div>
             {needsRanking ? (
               <>
@@ -1367,10 +1382,11 @@ function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone }) {
   const newIni = venueInitials(newVenue.name)
   const oppIni = venueInitials(opponent.venue?.name || '')
   const oppPhoto = opponent.photo_url || (opponent.photos && opponent.photos[0]) || null
-  // Show the actual matchbook photo when there is one, else the initials disc.
+  // Show the actual matchbook photo (prominently) when there is one, else the
+  // initials disc — so the head-to-head is between the photos you took.
   const avatar = (photo, bg, ini) => photo
-    ? <img src={photo} alt="" style={{ width: 72, height: 72, borderRadius: '50%', objectFit: 'cover', marginBottom: 12 }} />
-    : <div style={{ width: 72, height: 72, borderRadius: '50%', background: bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, fontWeight: 700, color: '#fff', marginBottom: 12 }}>{ini}</div>
+    ? <img src={photo} alt="" style={{ width: 120, height: 120, borderRadius: 16, objectFit: 'cover', marginBottom: 12, border: `1px solid ${C.border}` }} />
+    : <div style={{ width: 88, height: 88, borderRadius: '50%', background: bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, fontWeight: 700, color: '#fff', marginBottom: 12 }}>{ini}</div>
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: C.bg }}>
