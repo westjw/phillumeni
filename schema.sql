@@ -282,7 +282,7 @@ as $$
   where p is not null and p <> '';
 $$;
 
-revoke execute on function venue_photos(integer) from public;
+revoke execute on function venue_photos(integer) from public, anon;
 grant execute on function venue_photos(integer) to authenticated;
 
 -- ─── REFERRALS ───────────────────────────────────────────
@@ -301,7 +301,7 @@ as $$
     and id <> auth.uid();
 $$;
 
-revoke execute on function my_referral_count() from public;
+revoke execute on function my_referral_count() from public, anon;
 grant execute on function my_referral_count() to authenticated;
 
 -- ─── FOLLOW GRAPH ────────────────────────────────────────
@@ -323,7 +323,7 @@ as $$
   order by p.username;
 $$;
 
-revoke execute on function following_list() from public;
+revoke execute on function following_list() from public, anon;
 grant execute on function following_list() to authenticated;
 
 create or replace function search_collectors(q text)
@@ -345,7 +345,7 @@ as $$
   limit 20;
 $$;
 
-revoke execute on function search_collectors(text) from public;
+revoke execute on function search_collectors(text) from public, anon;
 grant execute on function search_collectors(text) to authenticated;
 
 -- Friends rankings: per-venue AVG(score) across the people I follow (spec §3).
@@ -369,5 +369,5 @@ as $$
   order by avg_score desc, rankers desc;
 $$;
 
-revoke execute on function friends_rankings() from public;
+revoke execute on function friends_rankings() from public, anon;
 grant execute on function friends_rankings() to authenticated;
