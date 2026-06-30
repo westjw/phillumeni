@@ -258,6 +258,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
   const [selected, setSelected] = useState(null)
   const [filter, setFilter] = useState('all')
   const [reporting, setReporting] = useState(null) // venue being reported
+  const [venuePhotos, setVenuePhotos] = useState([]) // anonymized gallery for the open venue
   const reportedIds = useMemo(() => reported.map(r => r.venue_id), [reported])
 
   // Tell the shell a sheet is open so it can hide the tab bar (sheet covers it).
@@ -265,6 +266,19 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
     onSheetOpenChange?.(!!reporting)
     return () => onSheetOpenChange?.(false)
   }, [reporting]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load the venue's community photo gallery (anonymized RPC; no-ops gracefully
+  // if migration 009 hasn't run yet).
+  useEffect(() => {
+    if (!selected) { setVenuePhotos([]); return }
+    let cancelled = false
+    supabase.rpc('venue_photos', { p_venue_id: selected.id }).then(({ data, error }) => {
+      if (cancelled) return
+      if (error) { setVenuePhotos([]); return }
+      setVenuePhotos(Array.isArray(data) ? data.filter(Boolean) : [])
+    })
+    return () => { cancelled = true }
+  }, [selected])
 
   const listed = venues
     .filter(v => {
@@ -320,16 +334,23 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
                 <div style={{ fontSize: 12, color: C.muted }}>{selected.address}</div>
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 10 }}>
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 12 }}>
               {selected.status === 'closed' && <Tag label="Closed" bg={C.redBg} color={C.red} />}
               <Tag label={selected.type || 'Spot'} bg={C.surface} color={C.sec} />
-              {selected.status !== 'closed' && (selected.sources || []).length >= 2 && <Tag label={`${selected.sources.length} sources`} bg={C.amberBg} color={C.amber} />}
             </div>
-            {selected.status !== 'closed' && (
-              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 10 }}>
-                {(selected.sources || []).map(s => (
-                  <span key={s} style={{ fontSize: 10, padding: '2px 8px', borderRadius: 99, background: C.surface, border: `0.5px solid ${C.border}`, color: C.sec }}>{s}</span>
-                ))}
+
+            {/* Community gallery — every matchbook submitted here, anonymized */}
+            {venuePhotos.length > 0 && (
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.4px', textTransform: 'uppercase', marginBottom: 8 }}>
+                  Matchbooks found here · {venuePhotos.length}
+                </div>
+                <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
+                  {venuePhotos.map((url, i) => (
+                    <img key={i} src={url} alt="Matchbook" loading="lazy"
+                      style={{ width: 104, height: 104, objectFit: 'cover', borderRadius: 12, flexShrink: 0, border: `0.5px solid ${C.border}`, background: C.surface }} />
+                  ))}
+                </div>
               </div>
             )}
             {selected.note && <div style={{ fontSize: 12, color: C.muted, fontStyle: 'italic', marginBottom: 14, lineHeight: 1.5 }}>{selected.note}</div>}
@@ -1432,6 +1453,23 @@ function ProfileScreen({ user, collection, nycTotal, onSignOut, isAdmin, pending
   const nyc = collection.filter(i => i.venue?.city === 'NYC')
   const nycGoal = Math.max(nycTotal || 0, nyc.length, 1)
   const username = user.user_metadata?.username || user.email?.split('@')[0] || 'collector'
+  const [copied, setCopied] = useState(false)
+
+  // Web Share works in iOS Safari / standalone PWAs — opens the native share
+  // sheet so the user can text/DM the invite. Falls back to copying the link.
+  const inviteFriends = async () => {
+    const url = (typeof window !== 'undefined' && window.location?.origin) || 'https://phillumeni.vercel.app'
+    const text = "I'm collecting matchbooks on Phillumeni — come hunt with me."
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: 'Phillumeni', text, url })
+      } else {
+        await navigator.clipboard.writeText(`${text} ${url}`)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      }
+    } catch { /* user dismissed the share sheet — no-op */ }
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
@@ -1444,6 +1482,11 @@ function ProfileScreen({ user, collection, nycTotal, onSignOut, isAdmin, pending
           </div>
           <div style={{ fontSize: 18, fontWeight: 700, color: C.text, letterSpacing: '-.3px', marginBottom: 2 }}>{username}</div>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>{user.email}</div>
+
+          <button onClick={inviteFriends} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 13, marginBottom: 14, background: C.dark, color: '#fff', border: 'none', borderRadius: 12, fontSize: 14, fontWeight: 700, cursor: 'pointer', letterSpacing: '-.1px' }}>
+            <i className={`ti ${copied ? 'ti-check' : 'ti-user-plus'}`} style={{ fontSize: 16 }} />
+            {copied ? 'Link copied' : 'Invite friends'}
+          </button>
 
           {isAdmin && (
             <button onClick={onOpenAdmin} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', marginBottom: 14, background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, cursor: 'pointer', boxShadow: '0 1px 6px rgba(0,0,0,0.06)' }}>

@@ -250,3 +250,36 @@ create policy "Admins can resolve fake reports"
 create policy "Admins can delete any venue"
   on venues for delete
   using (exists (select 1 from profiles p where p.id = auth.uid() and p.is_admin));
+
+-- ─── VENUE PHOTO GALLERY ─────────────────────────────────
+-- Returns every matchbook photo submitted for a venue (newest first) with no
+-- collector name and no user_id column — collections stay owner-only, this is
+-- the per-venue gallery on the venue detail page. Restricted to authenticated.
+-- Caveat: photo URLs embed the uploader's storage path id; re-path uploads for
+-- true anonymity (see migration 009).
+create or replace function venue_photos(p_venue_id integer)
+returns text[]
+language sql
+security definer
+stable
+set search_path = ''
+as $$
+  select coalesce(array_agg(p order by ord desc), '{}')
+  from (
+    select
+      c.collected_at as ord,
+      unnest(
+        case
+          when array_length(c.photos, 1) > 0 then c.photos
+          when c.photo_url is not null then array[c.photo_url]
+          else array[]::text[]
+        end
+      ) as p
+    from public.collections c
+    where c.venue_id = p_venue_id
+  ) q
+  where p is not null and p <> '';
+$$;
+
+revoke execute on function venue_photos(integer) from public;
+grant execute on function venue_photos(integer) to authenticated;
