@@ -47,9 +47,10 @@ const C = {
   dark:'#1A1918',
 }
 
-const pinColor = (v) => {
+const pinColor = (v, collected) => {
   if (v.status === 'closed') return C.muted
-  return C.green
+  if (collected) return C.amber   // yours — already in your collection
+  return C.green                  // out there to grab
 }
 
 // ─── SMALL COMPONENTS ────────────────────────────────────
@@ -125,12 +126,12 @@ function MbIcon({ size = 40 }) {
 
 // ─── MAPBOX MAP ──────────────────────────────────────────
 // Style a marker's DOM element for its venue + selected state (no recreation).
-function styleMarkerEl(el, v, isSelected) {
+function styleMarkerEl(el, v, isSelected, collected) {
   el.style.cssText = [
     `width:${isSelected ? 34 : 28}px`,
     `height:${isSelected ? 34 : 28}px`,
     'border-radius:50%',
-    `background:${pinColor(v)}`,
+    `background:${pinColor(v, collected)}`,
     `border:${isSelected ? '3px' : '2.5px'} solid white`,
     'cursor:pointer',
     'display:flex',
@@ -142,7 +143,7 @@ function styleMarkerEl(el, v, isSelected) {
     `box-shadow:0 ${isSelected ? 4 : 2}px ${isSelected ? 16 : 8}px rgba(0,0,0,${isSelected ? 0.4 : 0.25})`,
     'transition:all .15s',
   ].join(';')
-  el.textContent = v.status === 'closed' ? '✕' : '✦'
+  el.textContent = v.status === 'closed' ? '✕' : collected ? '✓' : '✦'
 }
 
 function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVenue, filter }) {
@@ -210,12 +211,13 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
     const mapboxgl = mapboxglRef.current
     if (!mapboxgl || !mapRef.current) return
 
+    // Collected venues stay ON the map (marked as yours) — only hide ones you
+    // reported as unavailable. The closed ones stay visible (grey) as history.
     const visible = venues.filter(v => {
-      if (collectionIds.includes(v.id)) return false
       if (reportedIds.includes(v.id)) return false
       if (filter === 'open') return v.is_open && v.status !== 'closed'
       if (filter === 'multi') return (v.sources || []).length >= 2
-      return true // closed venues stay visible (grey) as history
+      return true
     })
     const visibleIds = new Set(visible.map(v => v.id))
 
@@ -224,11 +226,13 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
     })
 
     visible.forEach(v => {
+      const collected = collectionIds.includes(v.id)
       const existing = markersRef.current.get(v.id)
       if (existing) {
         existing.venue = v
+        existing.collected = collected
         existing.marker.setLngLat([v.lng, v.lat])
-        styleMarkerEl(existing.el, v, selectedRef.current?.id === v.id)
+        styleMarkerEl(existing.el, v, selectedRef.current?.id === v.id, collected)
         return
       }
       const el = document.createElement('div')
@@ -237,16 +241,16 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
         const cur = selectedRef.current
         onSelectVenue(cur?.id === v.id ? null : v)
       })
-      styleMarkerEl(el, v, selectedRef.current?.id === v.id)
+      styleMarkerEl(el, v, selectedRef.current?.id === v.id, collected)
       const marker = new mapboxgl.Marker({ element: el }).setLngLat([v.lng, v.lat]).addTo(mapRef.current)
-      markersRef.current.set(v.id, { marker, el, venue: v })
+      markersRef.current.set(v.id, { marker, el, venue: v, collected })
     })
   }, [venues, collectionIds, reportedIds, filter, mapReady])
 
   // Restyle in place when the selection changes — no marker teardown.
   useEffect(() => {
     markersRef.current.forEach((entry, id) => {
-      styleMarkerEl(entry.el, entry.venue, selectedVenue?.id === id)
+      styleMarkerEl(entry.el, entry.venue, selectedVenue?.id === id, entry.collected)
     })
   }, [selectedVenue])
 
@@ -282,7 +286,6 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
 
   const listed = venues
     .filter(v => {
-      if (collectionIds.includes(v.id)) return false
       if (reportedIds.includes(v.id)) return false
       if (v.status === 'closed') return false // closed venues aren't collectable
       if (filter === 'open') return v.is_open
@@ -336,6 +339,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
             </div>
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 12 }}>
               {selected.status === 'closed' && <Tag label="Closed" bg={C.redBg} color={C.red} />}
+              {collectionIds.includes(selected.id) && <Tag label="✓ In your collection" bg={C.amberBg} color={C.amber} />}
               <Tag label={selected.type || 'Spot'} bg={C.surface} color={C.sec} />
             </div>
 
@@ -360,6 +364,15 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
               </div>
             ) : reportedIds.includes(selected.id) ? (
               <div style={{ padding: 12, background: C.redBg, borderRadius: 12, fontSize: 13, color: C.red, textAlign: 'center', fontWeight: 500 }}>Reported as unavailable</div>
+            ) : collectionIds.includes(selected.id) ? (
+              <>
+                <div style={{ padding: 12, background: C.amberBg, borderRadius: 12, fontSize: 13, color: C.amber, textAlign: 'center', fontWeight: 600, marginBottom: 8 }}>
+                  <i className="ti ti-check" style={{ fontSize: 13, marginRight: 5 }} />You've collected this one
+                </div>
+                <OutlineBtn onClick={() => setReporting(selected)} color={C.red}>
+                  <i className="ti ti-flag" style={{ fontSize: 12, marginRight: 5 }} />Report a problem
+                </OutlineBtn>
+              </>
             ) : (
               <>
                 <PrimaryBtn onClick={() => { onCollect(selected); setSelected(null) }} style={{ marginBottom: 8 }}>Got it — add to collection</PrimaryBtn>
@@ -383,7 +396,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
           <div style={{ padding: '12px 16px 8px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
               <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{listed.length} spots nearby</div>
-              <div style={{ fontSize: 11, color: C.muted }}>collected spots hidden</div>
+              <div style={{ fontSize: 11, color: C.muted }}>amber = yours</div>
             </div>
             {listed.map(v => (
               <div key={v.id} onClick={() => setSelected(v)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '9px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
@@ -392,7 +405,9 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
                   <div style={{ fontSize: 13, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v.name}</div>
                   <div style={{ fontSize: 11, color: C.muted }}>{v.neighborhood || v.city}</div>
                 </div>
-                {v.type && <Tag label={v.type} bg={C.surface} color={C.sec} />}
+                {collectionIds.includes(v.id)
+                  ? <Tag label="✓ Yours" bg={C.amberBg} color={C.amber} />
+                  : (v.type && <Tag label={v.type} bg={C.surface} color={C.sec} />)}
               </div>
             ))}
             {listed.length === 0 && (
@@ -403,7 +418,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
                 </div>
               ) : (
                 <div style={{ textAlign: 'center', padding: '2rem', color: C.muted, fontSize: 13 }}>
-                  No spots to find — you may have collected them all! 🔥
+                  No spots nearby yet — submit one to get started. 🔥
                 </div>
               )
             )}
