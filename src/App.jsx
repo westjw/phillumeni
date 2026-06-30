@@ -176,6 +176,7 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
   const mapboxglRef = useRef(null)
   const markersRef = useRef(new Map()) // venue.id -> { marker, el, venue }
   const geolocateRef = useRef(null)
+  const didFitRef = useRef(false) // fit the view to all pins once on first load
   const [mapReady, setMapReady] = useState(false)
   const selectedRef = useRef(selectedVenue)
   selectedRef.current = selectedVenue
@@ -214,7 +215,8 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
       })
 
       map.on('load', () => {
-        geolocate.trigger()
+        // Don't auto-jump to GPS — it would fight the fit-to-your-pins below.
+        // The locate control is still there to recenter on yourself on tap.
         if (!cancelled) setMapReady(true)
       })
 
@@ -269,6 +271,15 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
       const marker = new mapboxgl.Marker({ element: el }).setLngLat([v.lng, v.lat]).addTo(mapRef.current)
       markersRef.current.set(v.id, { marker, el, venue: v, collected })
     })
+
+    // On first load with pins, frame ALL of them (so far-flung finds like
+    // Nantucket aren't stranded off a NYC-locked view). Once only.
+    if (!didFitRef.current && mapReady && visible.length > 0) {
+      didFitRef.current = true
+      const bounds = new mapboxgl.LngLatBounds()
+      visible.forEach(v => bounds.extend([v.lng, v.lat]))
+      mapRef.current.fitBounds(bounds, { padding: 56, maxZoom: 14.5, duration: 0 })
+    }
   }, [venues, collectionIds, reportedIds, filter, mapReady])
 
   // Restyle in place when the selection changes — no marker teardown.
