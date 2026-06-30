@@ -10,6 +10,15 @@ const NYC = { lng: -74.006, lat: 40.7128 }
 
 // Title-case a Mapbox poi_category (e.g. "fast food restaurant" -> "Fast Food Restaurant")
 const titleCase = (s) => (s ? String(s).replace(/\b\w/g, (c) => c.toUpperCase()) : s)
+const venueInitials = (name) => (name || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('')
+
+function eloUpdate(scoreA, scoreB, aWon) {
+  const S = 3, K = 0.5
+  const expA = 1 / (1 + Math.pow(10, (scoreB - scoreA) / S))
+  const newA = Math.min(10, Math.max(0, scoreA + K * ((aWon ? 1 : 0) - expA)))
+  const newB = Math.min(10, Math.max(0, scoreB + K * ((aWon ? 0 : 1) - (1 - expA))))
+  return [Math.round(newA * 10) / 10, Math.round(newB * 10) / 10]
+}
 
 // ─── COLORS ─────────────────────────────────────────────
 const C = {
@@ -512,7 +521,7 @@ function Collection({ items, venues, onRemove }) {
 }
 
 // ─── SUBMIT SCREEN ───────────────────────────────────────
-function Submit({ onBack, onAdded, user }) {
+function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone }) {
   const [step, setStep] = useState(1)
   const [photos, setPhotos] = useState([]) // { id, preview, url, path, status: 'uploading'|'done'|'error' }
   const photosRef = useRef(photos)
@@ -525,6 +534,8 @@ function Submit({ onBack, onAdded, user }) {
   const [adding, setAdding] = useState(false)
   const [searchErr, setSearchErr] = useState('')
   const [addErr, setAddErr] = useState('')
+  const [addedVenue, setAddedVenue] = useState(null)
+  const [needsRanking, setNeedsRanking] = useState(false)
   const searchTimer = useRef(null)
   const fileInputRef = useRef(null)
   const searchSeq = useRef(0)        // guards against out-of-order search responses
@@ -697,8 +708,10 @@ function Submit({ onBack, onAdded, user }) {
 
       // Add to collection — capture the real row (serial id) and surface errors.
       // photos[] may not be migrated yet (006); fall back to just the cover url.
+      // First-ever ranked venue gets score 7.5 automatically (spec §3).
+      const isFirstRanked = rankedItems.length === 0
       const cover = photoUrls[0] || null
-      const baseRow = { user_id: user.id, venue_id: venue.id, photo_url: cover }
+      const baseRow = { user_id: user.id, venue_id: venue.id, photo_url: cover, score: isFirstRanked ? 7.5 : null }
       let { data: collectionRow, error: collErr } = await supabase
         .from('collections').insert({ ...baseRow, photos: photoUrls }).select().single()
       if (collErr && (collErr.code === '42703' || /photos/.test(collErr.message || ''))) {
@@ -744,6 +757,8 @@ function Submit({ onBack, onAdded, user }) {
         }
       }
 
+      setAddedVenue(venue)
+      setNeedsRanking(!isFirstRanked && !!savedRow && savedRow.score == null)
       onAdded(venue, savedRow || null)
       sessionRef.current = '' // start a fresh billing session for the next submit
       setStep(3)
@@ -754,10 +769,11 @@ function Submit({ onBack, onAdded, user }) {
     setAdding(false)
   }
 
+  const displayStep = Math.min(step, 3)
   const Steps = () => (
     <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
       {[1, 2, 3].map(s => (
-        <div key={s} style={{ height: 4, borderRadius: 2, width: s === step ? 28 : 12, background: s === step ? C.dark : s < step ? C.amber : C.border, transition: 'all .2s' }} />
+        <div key={s} style={{ height: 4, borderRadius: 2, width: s === displayStep ? 28 : 12, background: s === displayStep ? C.dark : s < displayStep ? C.amber : C.border, transition: 'all .2s' }} />
       ))}
     </div>
   )
@@ -886,8 +902,186 @@ function Submit({ onBack, onAdded, user }) {
             <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, marginBottom: 24 }}>
               <span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is live and in your collection. Everyone nearby can find it.
             </div>
-            <PrimaryBtn onClick={onBack} style={{ marginBottom: 10 }}>Back to map</PrimaryBtn>
-            <OutlineBtn onClick={() => { setStep(1); clearPhotos(); setQuery(''); setResults([]); setPicked(null); setSearchErr(''); setAddErr('') }}>Submit another</OutlineBtn>
+            {needsRanking ? (
+              <>
+                <PrimaryBtn onClick={() => setStep(4)} style={{ marginBottom: 10 }}>Rank this matchbook →</PrimaryBtn>
+                <OutlineBtn onClick={onBack}>Skip for now</OutlineBtn>
+              </>
+            ) : (
+              <>
+                <PrimaryBtn onClick={onBack} style={{ marginBottom: 10 }}>Back to map</PrimaryBtn>
+                <OutlineBtn onClick={() => { setStep(1); clearPhotos(); setQuery(''); setResults([]); setPicked(null); setSearchErr(''); setAddErr('') }}>Submit another</OutlineBtn>
+              </>
+            )}
+          </div>
+        )}
+        {step === 4 && addedVenue && (
+          <ComparisonFlow
+            newVenue={addedVenue}
+            rankedItems={rankedItems}
+            user={user}
+            onDone={() => (onRankingDone || onBack)()}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── COMPARISON FLOW ─────────────────────────────────────
+// Binary-search insertion into the user's ranked list with Elo updates per tap.
+function ComparisonFlow({ newVenue, rankedItems, user, onDone }) {
+  const [lo, setLo] = useState(0)
+  const [hi, setHi] = useState(rankedItems.length - 1)
+  const [doneCount, setDoneCount] = useState(0)
+  const [newScore, setNewScore] = useState(null)
+  const [liveScores, setLiveScores] = useState({})
+  const [saving, setSaving] = useState(false)
+
+  const totalSteps = Math.max(1, Math.ceil(Math.log2(rankedItems.length + 1)))
+  const mid = Math.floor((lo + hi) / 2)
+  const opponent = rankedItems[mid]
+
+  if (!opponent || lo > hi) { onDone(); return null }
+
+  const oppScore = liveScores[opponent.venue_id] ?? (opponent.score ?? 7.5)
+  const curNewScore = newScore ?? oppScore
+  const oppRank = mid + 1
+
+  const pick = async (newWon) => {
+    if (saving) return
+    setSaving(true)
+    const [updNew, updOpp] = eloUpdate(curNewScore, oppScore, newWon)
+    const newLo = newWon ? lo : mid + 1
+    const newHi = newWon ? mid - 1 : hi
+
+    await Promise.all([
+      supabase.from('collections').update({ score: updNew }).eq('user_id', user.id).eq('venue_id', newVenue.id),
+      supabase.from('collections').update({ score: updOpp }).eq('user_id', user.id).eq('venue_id', opponent.venue_id),
+      supabase.from('comparisons').insert({
+        user_id: user.id,
+        winner_venue_id: newWon ? newVenue.id : opponent.venue_id,
+        loser_venue_id: newWon ? opponent.venue_id : newVenue.id,
+      }),
+    ])
+
+    setNewScore(updNew)
+    setLiveScores(prev => ({ ...prev, [opponent.venue_id]: updOpp }))
+    setDoneCount(n => n + 1)
+    setSaving(false)
+
+    if (newLo > newHi) { onDone(); return }
+    setLo(newLo)
+    setHi(newHi)
+  }
+
+  const newIni = venueInitials(newVenue.name)
+  const oppIni = venueInitials(opponent.venue?.name || '')
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: C.bg }}>
+      <SBar />
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '20px 20px 16px', overflowY: 'auto' }}>
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.5px', marginBottom: 4, textAlign: 'center' }}>Where does this rank?</div>
+        <div style={{ fontSize: 14, color: C.muted, marginBottom: 18, textAlign: 'center' }}>Tap the one you liked more</div>
+
+        <div style={{ display: 'flex', gap: 6, marginBottom: 24 }}>
+          {Array.from({ length: totalSteps }, (_, i) => (
+            <div key={i} style={{ height: 4, width: i < doneCount ? 24 : (i === doneCount ? 28 : 12), borderRadius: 2, background: i < doneCount ? C.amber : (i === doneCount ? C.dark : C.border), transition: 'all .2s' }} />
+          ))}
+        </div>
+
+        <div onClick={() => !saving && pick(true)}
+          style={{ width: '100%', background: C.amberBg, border: `2px solid ${C.amberBd}`, borderRadius: 20, padding: '28px 16px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.7 : 1, marginBottom: 14, position: 'relative' }}>
+          <div style={{ position: 'absolute', top: -13, left: '50%', transform: 'translateX(-50%)', background: C.amberBg, border: `1.5px solid ${C.amberBd}`, borderRadius: 99, padding: '3px 16px', fontSize: 11, fontWeight: 800, color: C.amber, letterSpacing: '.8px', whiteSpace: 'nowrap' }}>NEW</div>
+          <div style={{ width: 72, height: 72, borderRadius: '50%', background: '#1A1918', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, fontWeight: 700, color: '#fff', marginBottom: 12 }}>{newIni}</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 4, textAlign: 'center' }}>{newVenue.name}</div>
+          <div style={{ fontSize: 13, color: C.sec }}>{newVenue.neighborhood || newVenue.city || 'NYC'}</div>
+        </div>
+
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.muted, letterSpacing: '1px', marginBottom: 14 }}>VS</div>
+
+        <div onClick={() => !saving && pick(false)}
+          style={{ width: '100%', background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 20, padding: '28px 16px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.7 : 1, marginBottom: 20, position: 'relative' }}>
+          <div style={{ position: 'absolute', top: -13, left: '50%', transform: 'translateX(-50%)', background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 99, padding: '3px 16px', fontSize: 11, fontWeight: 800, color: C.muted, letterSpacing: '.8px', whiteSpace: 'nowrap' }}>CURRENTLY #{oppRank}</div>
+          <div style={{ width: 72, height: 72, borderRadius: '50%', background: opponent.venue?.bg_color || '#3D2B1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, fontWeight: 700, color: '#fff', marginBottom: 12 }}>{oppIni}</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 4, textAlign: 'center' }}>{opponent.venue?.name || ''}</div>
+          <div style={{ fontSize: 13, color: C.sec }}>{opponent.venue?.neighborhood || opponent.venue?.city || ''}</div>
+        </div>
+
+        <button onClick={onDone} style={{ background: 'none', border: 'none', fontSize: 14, color: C.muted, cursor: 'pointer', textDecoration: 'underline', marginBottom: 10 }}>
+          Too close to call — skip
+        </button>
+        <div style={{ fontSize: 11, color: C.muted, textAlign: 'center', lineHeight: 1.5 }}>Each tap also runs an Elo score update on both venues</div>
+      </div>
+    </div>
+  )
+}
+
+// ─── RANKINGS SCREEN ─────────────────────────────────────
+function Rankings({ collection, venues }) {
+  const [tab, setTab] = useState('mine')
+  const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
+  const ranked = collection
+    .filter(i => i.score != null)
+    .sort((a, b) => b.score - a.score)
+    .map((item, idx) => ({ ...item, venue: venueMap[item.venue_id], rank: idx + 1 }))
+    .filter(i => i.venue)
+
+  const rankCircle = (n) => ({
+    width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 13, fontWeight: 700, flexShrink: 0,
+    background: n === 1 ? '#D4A017' : n === 2 ? '#B0B0B0' : n === 3 ? '#B87333' : C.surface,
+    color: n <= 3 ? '#fff' : C.muted,
+  })
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      <SBar />
+      <div style={{ padding: '12px 16px 0', flexShrink: 0 }}>
+        <div style={{ fontSize: 28, fontWeight: 800, color: C.text, letterSpacing: '-.6px', marginBottom: 12 }}>Rankings</div>
+        <div style={{ display: 'flex', borderBottom: `0.5px solid ${C.border}` }}>
+          {['Mine', 'Friends', 'City', 'World'].map(t => (
+            <div key={t} onClick={() => setTab(t.toLowerCase())}
+              style={{ padding: '8px 14px 9px', fontSize: 14, fontWeight: tab === t.toLowerCase() ? 700 : 500, color: tab === t.toLowerCase() ? C.text : C.muted, cursor: 'pointer', borderBottom: tab === t.toLowerCase() ? `2px solid ${C.text}` : '2px solid transparent', marginBottom: -1, transition: 'color .15s' }}>
+              {t}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {tab === 'mine' ? (
+          ranked.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>🏆</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>No rankings yet</div>
+              <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>Submit your first matchbook to start building your list</div>
+            </div>
+          ) : (
+            <div style={{ padding: '4px 16px' }}>
+              {ranked.map(item => (
+                <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}` }}>
+                  <div style={rankCircle(item.rank)}>{item.rank}</div>
+                  <div style={{ width: 42, height: 42, borderRadius: 11, background: item.venue.bg_color || C.dark, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0, letterSpacing: '-.2px' }}>
+                    {venueInitials(item.venue.name)}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
+                    <div style={{ fontSize: 12, color: C.muted }}>{item.venue.neighborhood || item.venue.city}</div>
+                  </div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: C.amber, flexShrink: 0 }}>{Number(item.score).toFixed(1)}</div>
+                  <button style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: '4px 2px', fontSize: 18, flexShrink: 0, letterSpacing: '.5px' }}>···</button>
+                </div>
+              ))}
+              <div style={{ height: 24 }} />
+            </div>
+          )
+        ) : (
+          <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>🔜</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>Coming soon</div>
+            <div style={{ fontSize: 13, color: C.muted }}>Build your collection to unlock {tab} rankings</div>
           </div>
         )}
       </div>
@@ -1057,6 +1251,7 @@ function AuthScreen({ onDone }) {
 function TabBar({ active, onNav }) {
   const tabs = [
     { id: 'explore', icon: 'ti-map', l: 'Explore' },
+    { id: 'rankings', icon: 'ti-trophy', l: 'Rankings' },
     { id: 'collection', icon: 'ti-stack-2', l: 'Collection' },
     { id: 'profile', icon: 'ti-user', l: 'Profile' },
   ]
@@ -1203,6 +1398,11 @@ export default function App() {
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
   const enrichedCollection = collection.map(item => ({ ...item, venue: venueMap[item.venue_id] }))
   const collectionIds = useMemo(() => collection.map(i => i.venue_id), [collection])
+  // Ranked items: collection rows with a score, sorted best-first (passed to Submit + Rankings)
+  const rankedItems = useMemo(
+    () => enrichedCollection.filter(i => i.score != null && i.venue).sort((a, b) => b.score - a.score),
+    [enrichedCollection]
+  )
 
   const phoneStyle = {
     maxWidth: 390,
@@ -1235,7 +1435,13 @@ export default function App() {
   return (
     <div style={phoneStyle}>
       {showSubmit ? (
-        <Submit onBack={() => setShowSubmit(false)} onAdded={handleAdded} user={user} />
+        <Submit
+          onBack={() => setShowSubmit(false)}
+          onAdded={handleAdded}
+          user={user}
+          rankedItems={rankedItems}
+          onRankingDone={() => { refreshCollection(); setShowSubmit(false); setTab('rankings') }}
+        />
       ) : (
         <>
           {tab === 'explore' && (
@@ -1249,6 +1455,9 @@ export default function App() {
               venuesError={venuesError}
               onRetry={loadVenues}
             />
+          )}
+          {tab === 'rankings' && (
+            <Rankings collection={collection} venues={venues} />
           )}
           {tab === 'collection' && (
             <Collection
