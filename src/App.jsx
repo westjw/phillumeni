@@ -378,6 +378,7 @@ function Collection({ items, venues, onRemove }) {
 
   if (detail) {
     const v = detail.venue
+    const detailPhotos = (detail.photos && detail.photos.length) ? detail.photos : (detail.photo_url ? [detail.photo_url] : [])
     return (
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
         <SBar title="Collection" />
@@ -387,8 +388,8 @@ function Collection({ items, venues, onRemove }) {
               <i className="ti ti-arrow-left" style={{ fontSize: 13 }} /> Collection
             </button>
           </div>
-          {detail.photo_url ? (
-            <img src={detail.photo_url} alt="Your matchbook" style={{ width: '100%', height: 210, objectFit: 'cover', display: 'block' }} />
+          {detailPhotos.length ? (
+            <img src={detailPhotos[0]} alt="Your matchbook" style={{ width: '100%', height: 210, objectFit: 'cover', display: 'block' }} />
           ) : (
             <div style={{ width: '100%', height: 210, background: v.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 72 }}>{v.emoji}</div>
           )}
@@ -400,9 +401,16 @@ function Collection({ items, venues, onRemove }) {
               <Tag label={v.type || 'Spot'} bg={C.surface} color={C.sec} />
               {v.status === 'closed' && <Tag label="Closed — collector's item" bg={C.redBg} color={C.red} />}
             </div>
-            {!detail.photo_url && (
+            {detailPhotos.length > 1 && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+                {detailPhotos.map((url, i) => (
+                  <img key={i} src={url} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, border: i === 0 ? `2px solid ${C.amber}` : `0.5px solid ${C.border}` }} />
+                ))}
+              </div>
+            )}
+            {detailPhotos.length === 0 && (
               <div style={{ background: C.surface, borderRadius: 12, padding: '10px 12px', fontSize: 12, color: C.muted, marginBottom: 14, lineHeight: 1.5 }}>
-                <i className="ti ti-camera" style={{ fontSize: 12, marginRight: 6 }} />No photo for this one yet
+                <i className="ti ti-camera" style={{ fontSize: 12, marginRight: 6 }} />No photos for this one yet
               </div>
             )}
             <OutlineBtn onClick={() => { onRemove(detail.id); setDetail(null) }} color={C.red}>Remove from collection</OutlineBtn>
@@ -496,9 +504,9 @@ function Collection({ items, venues, onRemove }) {
 // ─── SUBMIT SCREEN ───────────────────────────────────────
 function Submit({ onBack, onAdded, user }) {
   const [step, setStep] = useState(1)
-  const [photoPreview, setPhotoPreview] = useState(null) // local object URL for preview
-  const [photoUrl, setPhotoUrl] = useState(null)         // uploaded public URL (stored on the collection)
-  const [uploading, setUploading] = useState(false)
+  const [photos, setPhotos] = useState([]) // { id, preview, url, path, status: 'uploading'|'done'|'error' }
+  const photosRef = useRef(photos)
+  photosRef.current = photos
   const [uploadErr, setUploadErr] = useState('')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
@@ -514,30 +522,52 @@ function Submit({ onBack, onAdded, user }) {
   const getSession = () => (sessionRef.current ||= crypto.randomUUID())
 
   const handlePhotoSelect = async (e) => {
-    const file = e.target.files?.[0]
+    const files = [...(e.target.files || [])]
     e.target.value = '' // allow re-selecting the same file later
-    if (!file || !user) return
+    if (!files.length || !user) return
     setUploadErr('')
-    setPhotoUrl(null)
-    setPhotoPreview(URL.createObjectURL(file))
-    setUploading(true)
-    try {
-      const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
-      const path = `${user.id}/${crypto.randomUUID()}.${ext}`
-      const { error: upErr } = await supabase.storage
-        .from('matchbooks')
-        .upload(path, file, { contentType: file.type || 'image/jpeg', upsert: false })
-      if (upErr) throw upErr
-      const { data } = supabase.storage.from('matchbooks').getPublicUrl(path)
-      setPhotoUrl(data.publicUrl)
-    } catch (err) {
-      console.error(err)
-      setUploadErr('Upload failed — retry, or continue without a photo.')
+    for (const file of files) {
+      const id = crypto.randomUUID()
+      setPhotos(prev => [...prev, { id, preview: URL.createObjectURL(file), url: null, path: null, status: 'uploading' }])
+      try {
+        const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
+        const path = `${user.id}/${crypto.randomUUID()}.${ext}`
+        const { error: upErr } = await supabase.storage
+          .from('matchbooks')
+          .upload(path, file, { contentType: file.type || 'image/jpeg', upsert: false })
+        if (upErr) throw upErr
+        const { data } = supabase.storage.from('matchbooks').getPublicUrl(path)
+        setPhotos(prev => prev.map(p => (p.id === id ? { ...p, url: data.publicUrl, path, status: 'done' } : p)))
+      } catch (err) {
+        console.error(err)
+        setPhotos(prev => prev.map(p => (p.id === id ? { ...p, status: 'error' } : p)))
+        setUploadErr('A photo failed to upload — remove it and try again.')
+      }
     }
-    setUploading(false)
   }
 
-  const clearPhoto = () => { setPhotoPreview(null); setPhotoUrl(null); setUploadErr(''); setUploading(false) }
+  const removePhoto = (id) => {
+    setPhotos(prev => {
+      const gone = prev.find(p => p.id === id)
+      if (gone?.path) supabase.storage.from('matchbooks').remove([gone.path]) // clean up the orphan
+      if (gone?.preview) URL.revokeObjectURL(gone.preview)
+      return prev.filter(p => p.id !== id)
+    })
+  }
+
+  const clearPhotos = () => {
+    photos.forEach(p => p.preview && URL.revokeObjectURL(p.preview))
+    setPhotos([])
+    setUploadErr('')
+  }
+
+  const uploadingAny = photos.some(p => p.status === 'uploading')
+  const photoUrls = photos.filter(p => p.status === 'done').map(p => p.url)
+
+  // Revoke blob preview URLs on unmount (covers Cancel / Back to map / tab switch)
+  useEffect(() => () => {
+    photosRef.current.forEach(p => p.preview && URL.revokeObjectURL(p.preview))
+  }, [])
 
   const searchVenues = async (q) => {
     const query = q.trim()
@@ -655,25 +685,47 @@ function Submit({ onBack, onAdded, user }) {
         throw new Error('That spot is marked closed and can’t be collected.')
       }
 
-      // Add to collection — capture the real row (serial id) and surface errors
-      const { data: collectionRow, error: collErr } = await supabase
-        .from('collections')
-        .insert({ user_id: user.id, venue_id: venue.id, photo_url: photoUrl })
-        .select()
-        .single()
+      // Add to collection — capture the real row (serial id) and surface errors.
+      // photos[] may not be migrated yet (006); fall back to just the cover url.
+      const cover = photoUrls[0] || null
+      const baseRow = { user_id: user.id, venue_id: venue.id, photo_url: cover }
+      let { data: collectionRow, error: collErr } = await supabase
+        .from('collections').insert({ ...baseRow, photos: photoUrls }).select().single()
+      if (collErr && (collErr.code === '42703' || /photos/.test(collErr.message || ''))) {
+        ;({ data: collectionRow, error: collErr } = await supabase
+          .from('collections').insert(baseRow).select().single())
+      }
 
       let savedRow = collectionRow
       if (collErr) {
-        // unique(user_id, venue_id): already collected. Treat as success, but if a
-        // new photo was uploaded this round, attach it to the existing row.
+        // unique(user_id, venue_id): already collected. Treat as success, but merge
+        // any newly-uploaded photos into the existing row.
         if (collErr.code === '23505') {
-          if (photoUrl) {
-            const { data: updated } = await supabase
-              .from('collections')
-              .update({ photo_url: photoUrl })
-              .eq('user_id', user.id).eq('venue_id', venue.id)
-              .select().single()
-            savedRow = updated || null
+          if (photoUrls.length) {
+            const { data: existingC, error: selErr } = await supabase
+              .from('collections').select('photos, photo_url')
+              .eq('user_id', user.id).eq('venue_id', venue.id).single()
+            if (!selErr) {
+              // seed photos[] from the existing cover so photos[0] === photo_url holds
+              const existingPhotos = (existingC && existingC.photos && existingC.photos.length)
+                ? existingC.photos
+                : ((existingC && existingC.photo_url) ? [existingC.photo_url] : [])
+              const merged = [...existingPhotos, ...photoUrls]
+              const { data: updated } = await supabase
+                .from('collections')
+                .update({ photos: merged, photo_url: merged[0] })
+                .eq('user_id', user.id).eq('venue_id', venue.id).select().single()
+              savedRow = updated || null
+            } else {
+              // photos column not migrated — keep any existing cover, only set if missing
+              const { data: legacy } = await supabase
+                .from('collections').select('photo_url')
+                .eq('user_id', user.id).eq('venue_id', venue.id).single()
+              const { data: updated } = await supabase
+                .from('collections').update({ photo_url: (legacy && legacy.photo_url) || cover })
+                .eq('user_id', user.id).eq('venue_id', venue.id).select().single()
+              savedRow = updated || null
+            }
           } else {
             savedRow = null
           }
@@ -715,53 +767,55 @@ function Submit({ onBack, onAdded, user }) {
         {step === 1 && (
           <>
             <div style={{ fontSize: 20, fontWeight: 700, color: C.text, letterSpacing: '-.4px', marginBottom: 4 }}>Found a matchbook?</div>
-            <div style={{ fontSize: 13, color: C.muted, marginBottom: 20, lineHeight: 1.5 }}>Add a photo of the matchbook for your collection. Optional — you can skip it.</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 20, lineHeight: 1.5 }}>Add photos of the matchbook for your collection. Optional — you can skip it.</div>
 
             <input
               ref={fileInputRef}
               type="file"
               accept="image/*"
-              capture="environment"
+              multiple
               onChange={handlePhotoSelect}
               style={{ display: 'none' }}
             />
 
-            {!photoPreview ? (
+            {photos.length === 0 ? (
               <div onClick={() => fileInputRef.current?.click()} style={{ border: `2px dashed ${C.border}`, borderRadius: 18, height: 200, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, cursor: 'pointer', background: C.surface }}>
                 <div style={{ width: 60, height: 60, background: C.dark, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <i className="ti ti-camera" style={{ fontSize: 26, color: '#fff' }} />
                 </div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>Take a photo</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>Take photos</div>
                 <div style={{ fontSize: 12, color: C.muted }}>or upload from your library</div>
               </div>
             ) : (
-              <div style={{ borderRadius: 18, height: 200, background: '#2A2824', position: 'relative', overflow: 'hidden', marginBottom: 4 }}>
-                <img src={photoPreview} alt="Matchbook preview" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: uploading ? 0.6 : 1 }} />
-                {uploading && (
-                  <div style={{ position: 'absolute', bottom: 14, left: '50%', transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.75)', borderRadius: 99, padding: '6px 16px', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div style={{ width: 10, height: 10, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.25)', borderTop: '2px solid #fff', animation: 'spin 1s linear infinite' }} />
-                    <span style={{ fontSize: 12, color: '#fff', fontWeight: 500 }}>Uploading…</span>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                {photos.map(p => (
+                  <div key={p.id} style={{ position: 'relative', aspectRatio: '1', borderRadius: 12, overflow: 'hidden', background: '#2A2824' }}>
+                    <img src={p.preview} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: p.status === 'done' ? 1 : 0.5 }} />
+                    {p.status === 'uploading' && (
+                      <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <div style={{ width: 16, height: 16, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)', borderTop: '2px solid #fff', animation: 'spin 1s linear infinite' }} />
+                      </div>
+                    )}
+                    {p.status === 'error' && (
+                      <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(212,60,60,0.35)', color: '#fff' }}>
+                        <i className="ti ti-alert-triangle" style={{ fontSize: 18 }} />
+                      </div>
+                    )}
+                    <button onClick={() => removePhoto(p.id)} style={{ position: 'absolute', top: 4, right: 4, width: 22, height: 22, borderRadius: '50%', background: 'rgba(0,0,0,0.6)', border: 'none', color: '#fff', fontSize: 14, lineHeight: '20px', cursor: 'pointer', padding: 0 }}>×</button>
                   </div>
-                )}
-                {!uploading && photoUrl && (
-                  <div style={{ position: 'absolute', bottom: 14, left: '50%', transform: 'translateX(-50%)', background: 'rgba(26,148,112,0.92)', borderRadius: 99, padding: '6px 16px', display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <i className="ti ti-check" style={{ fontSize: 13, color: '#fff' }} />
-                    <span style={{ fontSize: 12, color: '#fff', fontWeight: 700 }}>Photo added</span>
-                  </div>
-                )}
-                <button onClick={clearPhoto} style={{ position: 'absolute', top: 10, right: 10, background: 'rgba(0,0,0,0.5)', border: 'none', borderRadius: 99, padding: '4px 12px', fontSize: 11, color: '#fff', cursor: 'pointer' }}>Remove</button>
+                ))}
+                <div onClick={() => fileInputRef.current?.click()} style={{ aspectRatio: '1', borderRadius: 12, border: `2px dashed ${C.borderStr}`, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', background: C.surface }}>
+                  <i className="ti ti-plus" style={{ fontSize: 22, color: C.muted }} />
+                </div>
               </div>
             )}
 
             {uploadErr && (
-              <div style={{ fontSize: 12, color: C.red, marginTop: 8, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span>{uploadErr}</span>
-                <button onClick={() => fileInputRef.current?.click()} style={{ background: 'none', border: 'none', color: C.amber, fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>Retry</button>
-              </div>
+              <div style={{ fontSize: 12, color: C.red, marginTop: 10, lineHeight: 1.4 }}>{uploadErr}</div>
             )}
 
-            <PrimaryBtn onClick={() => setStep(2)} disabled={uploading} style={{ marginTop: 16 }}>
-              {uploading ? 'Uploading…' : photoUrl ? 'Next — find the venue' : 'Skip & find the venue'}
+            <PrimaryBtn onClick={() => setStep(2)} disabled={uploadingAny} style={{ marginTop: 16 }}>
+              {uploadingAny ? 'Uploading…' : photoUrls.length ? 'Next — find the venue' : 'Skip & find the venue'}
             </PrimaryBtn>
             <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
           </>
@@ -823,7 +877,7 @@ function Submit({ onBack, onAdded, user }) {
               <span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is live and in your collection. Everyone nearby can find it.
             </div>
             <PrimaryBtn onClick={onBack} style={{ marginBottom: 10 }}>Back to map</PrimaryBtn>
-            <OutlineBtn onClick={() => { setStep(1); clearPhoto(); setQuery(''); setResults([]); setPicked(null); setSearchErr(''); setAddErr('') }}>Submit another</OutlineBtn>
+            <OutlineBtn onClick={() => { setStep(1); clearPhotos(); setQuery(''); setResults([]); setPicked(null); setSearchErr(''); setAddErr('') }}>Submit another</OutlineBtn>
           </div>
         )}
       </div>

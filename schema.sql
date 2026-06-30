@@ -103,7 +103,8 @@ create table collections (
   id serial primary key,
   user_id uuid references auth.users(id) on delete cascade not null,
   venue_id integer references venues(id) on delete cascade not null,
-  photo_url text,
+  photo_url text,                         -- cover photo (= photos[0])
+  photos text[] not null default '{}',    -- all matchbook photos
   collected_at timestamptz default now(),
   unique(user_id, venue_id)
 );
