@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import mapboxgl from 'mapbox-gl'
+import 'mapbox-gl/dist/mapbox-gl.css'
+import '@tabler/icons-webfont/dist/tabler-icons.min.css'
 import { supabase } from './supabase.js'
 
 // ─── CONFIG ─────────────────────────────────────────────
@@ -19,7 +21,6 @@ const C = {
 }
 
 const pinColor = (v) => {
-  if (v.friend) return C.purple
   if (v.sources?.length >= 2) return C.amber
   if (!v.is_open) return '#9C9990'
   return C.green
@@ -262,7 +263,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onSubmit 
             </div>
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 10 }}>
               <Tag label={selected.is_open ? 'Open now' : 'Closed'} bg={selected.is_open ? C.greenBg : C.surface} color={selected.is_open ? C.green : C.muted} />
-              <Tag label={selected.type} bg={C.surface} color={C.sec} />
+              <Tag label={selected.type || 'Spot'} bg={C.surface} color={C.sec} />
               {(selected.sources || []).length >= 2 && <Tag label={`${selected.sources.length} sources`} bg={C.amberBg} color={C.amber} />}
             </div>
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -293,7 +294,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onSubmit 
                 <div style={{ width: 38, height: 38, borderRadius: 11, background: v.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{v.emoji}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v.name}</div>
-                  <div style={{ fontSize: 11, color: C.muted }}>{v.neighborhood}</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>{v.neighborhood || v.city}</div>
                 </div>
                 <Tag label={v.is_open ? 'Open' : 'Closed'} bg={v.is_open ? C.greenBg : C.surface} color={v.is_open ? C.green : C.muted} />
               </div>
@@ -318,7 +319,8 @@ function Collection({ items, venues, onRemove }) {
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
   const collected = items.map(item => ({ ...item, venue: venueMap[item.venue_id] })).filter(i => i.venue)
   const nyc = collected.filter(i => i.venue.city === 'NYC')
-  const hoods = [...new Set(collected.map(i => i.venue.neighborhood))]
+  const nycTotal = Math.max(venues.filter(v => v.city === 'NYC').length, nyc.length, 1)
+  const hoods = [...new Set(collected.map(i => i.venue.neighborhood).filter(Boolean))]
 
   if (detail) {
     const v = detail.venue
@@ -341,7 +343,7 @@ function Collection({ items, venues, onRemove }) {
             <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>{v.address}</div>
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 14 }}>
               <Tag label={`Collected ${new Date(detail.collected_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`} bg={C.greenBg} color={C.green} />
-              <Tag label={v.type} bg={C.surface} color={C.sec} />
+              <Tag label={v.type || 'Spot'} bg={C.surface} color={C.sec} />
             </div>
             {!detail.photo_url && (
               <div style={{ background: C.surface, borderRadius: 12, padding: '10px 12px', fontSize: 12, color: C.muted, marginBottom: 14, lineHeight: 1.5 }}>
@@ -384,10 +386,10 @@ function Collection({ items, venues, onRemove }) {
             <Card style={{ padding: '11px 14px', marginBottom: 12 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>NYC progress</div>
-                <div style={{ fontSize: 12, color: C.muted }}>{nyc.length} of 20 found</div>
+                <div style={{ fontSize: 12, color: C.muted }}>{nyc.length} of {nycTotal} found</div>
               </div>
               <div style={{ height: 5, background: C.surface, borderRadius: 3 }}>
-                <div style={{ height: 5, background: C.green, borderRadius: 3, width: `${Math.max(3, Math.round(nyc.length / 20 * 100))}%`, transition: 'width .5s' }} />
+                <div style={{ height: 5, background: C.green, borderRadius: 3, width: `${Math.min(100, Math.max(3, Math.round(nyc.length / nycTotal * 100)))}%`, transition: 'width .5s' }} />
               </div>
             </Card>
           )}
@@ -417,7 +419,7 @@ function Collection({ items, venues, onRemove }) {
                 <div style={{ width: 52, height: 52, borderRadius: 10, background: item.photo_url ? `#000 url("${item.photo_url}") center/cover no-repeat` : (item.venue.bg_color || '#1A1A1A'), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>{!item.photo_url && item.venue.emoji}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
-                  <div style={{ fontSize: 11, color: C.muted }}>{item.venue.neighborhood} · {item.venue.city}</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>{item.venue.neighborhood ? `${item.venue.neighborhood} · ${item.venue.city}` : item.venue.city}</div>
                 </div>
                 <div style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>{new Date(item.collected_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
               </div>
@@ -679,8 +681,9 @@ function Submit({ onBack, onAdded, user }) {
 }
 
 // ─── PROFILE SCREEN ──────────────────────────────────────
-function ProfileScreen({ user, collection, onSignOut }) {
+function ProfileScreen({ user, collection, nycTotal, onSignOut }) {
   const nyc = collection.filter(i => i.venue?.city === 'NYC')
+  const nycGoal = Math.max(nycTotal || 0, nyc.length, 1)
   const username = user.user_metadata?.username || user.email?.split('@')[0] || 'collector'
 
   return (
@@ -708,10 +711,10 @@ function ProfileScreen({ user, collection, onSignOut }) {
             <Card style={{ padding: '11px 14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>NYC progress</div>
-                <div style={{ fontSize: 12, color: C.muted }}>{nyc.length} of 20 found</div>
+                <div style={{ fontSize: 12, color: C.muted }}>{nyc.length} of {nycGoal} found</div>
               </div>
               <div style={{ height: 5, background: C.surface, borderRadius: 3 }}>
-                <div style={{ height: 5, background: C.green, borderRadius: 3, width: `${Math.max(3, Math.round(nyc.length / 20 * 100))}%` }} />
+                <div style={{ height: 5, background: C.green, borderRadius: 3, width: `${Math.min(100, Math.max(3, Math.round(nyc.length / nycGoal * 100)))}%` }} />
               </div>
             </Card>
           )}
@@ -1031,6 +1034,7 @@ export default function App() {
             <ProfileScreen
               user={user}
               collection={enrichedCollection}
+              nycTotal={venues.filter(v => v.city === 'NYC').length}
               onSignOut={handleSignOut}
             />
           )}

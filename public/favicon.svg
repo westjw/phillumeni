@@ -1,0 +1,32 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="mbs"><feDropShadow dx="2" dy="4" stdDeviation="5" flood-color="#000" flood-opacity="0.55"/></filter>
+    <filter id="mbt"><feDropShadow dx="1" dy="3" stdDeviation="3" flood-color="#000" flood-opacity="0.45"/></filter>
+    <clipPath id="mbc"><rect x="12" y="42" width="118" height="116" rx="8"/></clipPath>
+  </defs>
+  <rect width="200" height="200" rx="44" fill="#0D0D0D"/>
+  <g filter="url(#mbt)">
+    <rect x="108" y="48" width="82" height="104" rx="6" fill="#F0E8D0"/>
+    <rect x="108" y="48" width="82" height="104" rx="6" fill="none" stroke="#C4AE82" stroke-width="3"/>
+    <rect x="112" y="61" width="62" height="6" rx="3" fill="#D4A855" stroke="#8B6820" stroke-width="0.8"/><circle cx="180" cy="64" r="9" fill="#CC3322"/>
+    <rect x="112" y="77" width="62" height="6" rx="3" fill="#D4A855" stroke="#8B6820" stroke-width="0.8"/><circle cx="180" cy="80" r="9" fill="#CC3322"/>
+    <rect x="112" y="93" width="62" height="6" rx="3" fill="#D4A855" stroke="#8B6820" stroke-width="0.8"/><circle cx="180" cy="96" r="9" fill="#CC3322"/>
+    <rect x="112" y="109" width="62" height="6" rx="3" fill="#D4A855" stroke="#8B6820" stroke-width="0.8"/><circle cx="180" cy="112" r="9" fill="#CC3322"/>
+    <rect x="112" y="125" width="62" height="6" rx="3" fill="#D4A855" stroke="#8B6820" stroke-width="0.8"/><circle cx="180" cy="128" r="9" fill="#CC3322"/>
+    <rect x="112" y="141" width="62" height="6" rx="3" fill="#D4A855" stroke="#8B6820" stroke-width="0.8"/><circle cx="180" cy="144" r="9" fill="#CC3322"/>
+  </g>
+  <g filter="url(#mbs)">
+    <rect x="12" y="42" width="118" height="116" rx="8" fill="#EDE4CB"/>
+    <g clip-path="url(#mbc)">
+      <line x1="43" y1="42" x2="43" y2="158" stroke="#1C1708" stroke-width="1.5"/>
+      <rect x="73" y="42" width="3.5" height="116" fill="#CEC4A4"/>
+      <line x1="12" y1="71" x2="130" y2="71" stroke="#1C1708" stroke-width="1.3"/>
+      <rect x="12" y="99" width="118" height="3.5" fill="#CEC4A4"/>
+      <line x1="12" y1="131" x2="130" y2="131" stroke="#1C1708" stroke-width="1.3"/>
+      <path d="M75 80 C68 80 62 86 62 93 C62 103 75 116 75 116 C75 116 88 103 88 93 C88 86 82 80 75 80Z" fill="#E24B4A"/>
+      <circle cx="75" cy="93" r="6" fill="#EDE4CB"/>
+    </g>
+    <rect x="12" y="42" width="118" height="116" rx="8" fill="none" stroke="#C8B99A" stroke-width="1"/>
+    <rect x="122" y="42" width="8" height="116" fill="#C4AE82"/>
+  </g>
+</svg>
