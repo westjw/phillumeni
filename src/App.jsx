@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import mapboxgl from 'mapbox-gl'
-import 'mapbox-gl/dist/mapbox-gl.css'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import '@tabler/icons-webfont/dist/tabler-icons.min.css'
 import { supabase } from './supabase.js'
+// mapbox-gl (~600KB) is imported lazily inside AppMap so it stays out of the
+// initial bundle and only loads once the map actually mounts.
 
 // ─── CONFIG ─────────────────────────────────────────────
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
@@ -102,59 +102,91 @@ function MbIcon({ size = 40 }) {
 }
 
 // ─── MAPBOX MAP ──────────────────────────────────────────
+// Style a marker's DOM element for its venue + selected state (no recreation).
+function styleMarkerEl(el, v, isSelected) {
+  el.style.cssText = [
+    `width:${isSelected ? 34 : 28}px`,
+    `height:${isSelected ? 34 : 28}px`,
+    'border-radius:50%',
+    `background:${pinColor(v)}`,
+    `border:${isSelected ? '3px' : '2.5px'} solid white`,
+    'cursor:pointer',
+    'display:flex',
+    'align-items:center',
+    'justify-content:center',
+    'font-size:10px',
+    'color:white',
+    'font-weight:700',
+    `box-shadow:0 ${isSelected ? 4 : 2}px ${isSelected ? 16 : 8}px rgba(0,0,0,${isSelected ? 0.4 : 0.25})`,
+    'transition:all .15s',
+  ].join(';')
+  el.textContent = v.status === 'closed' ? '✕' : (v.is_open ? '✦' : '·')
+}
+
 function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVenue, filter }) {
   const containerRef = useRef(null)
   const mapRef = useRef(null)
-  const markersRef = useRef([])
+  const mapboxglRef = useRef(null)
+  const markersRef = useRef(new Map()) // venue.id -> { marker, el, venue }
   const geolocateRef = useRef(null)
+  const [mapReady, setMapReady] = useState(false)
+  const selectedRef = useRef(selectedVenue)
+  selectedRef.current = selectedVenue
 
-  // Init map
+  // Init map — mapbox-gl is loaded lazily here (kept out of the initial bundle).
   useEffect(() => {
     if (mapRef.current || !containerRef.current) return
-    mapboxgl.accessToken = MAPBOX_TOKEN
+    let cancelled = false
+    ;(async () => {
+      const mapboxgl = (await import('mapbox-gl')).default
+      await import('mapbox-gl/dist/mapbox-gl.css')
+      if (cancelled || mapRef.current || !containerRef.current) return
+      mapboxglRef.current = mapboxgl
+      mapboxgl.accessToken = MAPBOX_TOKEN
 
-    const map = new mapboxgl.Map({
-      container: containerRef.current,
-      style: 'mapbox://styles/mapbox/streets-v12',
-      center: [NYC.lng, NYC.lat],
-      zoom: 13.5,
-      attributionControl: false,
-    })
+      const map = new mapboxgl.Map({
+        container: containerRef.current,
+        style: 'mapbox://styles/mapbox/streets-v12',
+        center: [NYC.lng, NYC.lat],
+        zoom: 13.5,
+        attributionControl: false,
+      })
 
-    const geolocate = new mapboxgl.GeolocateControl({
-      positionOptions: { enableHighAccuracy: true },
-      trackUserLocation: true,
-      showUserHeading: true,
-    })
+      const geolocate = new mapboxgl.GeolocateControl({
+        positionOptions: { enableHighAccuracy: true },
+        trackUserLocation: true,
+        showUserHeading: true,
+      })
 
-    map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right')
-    map.addControl(geolocate, 'top-right')
+      map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right')
+      map.addControl(geolocate, 'top-right')
 
-    // Don't let a denied/timed-out location prompt fail silently; map stays on NYC.
-    geolocate.on('error', (err) => {
-      console.warn('Geolocation unavailable; staying centered on NYC.', err?.message || err)
-    })
+      // Don't let a denied/timed-out location prompt fail silently; map stays on NYC.
+      geolocate.on('error', (err) => {
+        console.warn('Geolocation unavailable; staying centered on NYC.', err?.message || err)
+      })
 
-    map.on('load', () => {
-      geolocate.trigger()
-    })
+      map.on('load', () => {
+        geolocate.trigger()
+        if (!cancelled) setMapReady(true)
+      })
 
-    mapRef.current = map
-    geolocateRef.current = geolocate
+      mapRef.current = map
+      geolocateRef.current = geolocate
+    })()
 
     return () => {
-      map.remove()
-      mapRef.current = null
+      cancelled = true
+      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null }
+      markersRef.current.clear()
     }
   }, [])
 
-  // Update markers when data changes
+  // Sync markers to the visible set: add new ones, update changed ones in place,
+  // remove gone ones — never a full teardown/rebuild.
   useEffect(() => {
-    if (!mapRef.current) return
-
-    // Clear old markers
-    markersRef.current.forEach(m => m.remove())
-    markersRef.current = []
+    const mapboxgl = mapboxglRef.current
+    if (!mapboxgl || !mapRef.current) return
 
     const visible = venues.filter(v => {
       if (collectionIds.includes(v.id)) return false
@@ -163,41 +195,38 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
       if (filter === 'multi') return (v.sources || []).length >= 2
       return true // closed venues stay visible (grey) as history
     })
+    const visibleIds = new Set(visible.map(v => v.id))
+
+    markersRef.current.forEach((entry, id) => {
+      if (!visibleIds.has(id)) { entry.marker.remove(); markersRef.current.delete(id) }
+    })
 
     visible.forEach(v => {
-      const isSelected = selectedVenue?.id === v.id
-      const color = pinColor(v)
-
+      const existing = markersRef.current.get(v.id)
+      if (existing) {
+        existing.venue = v
+        existing.marker.setLngLat([v.lng, v.lat])
+        styleMarkerEl(existing.el, v, selectedRef.current?.id === v.id)
+        return
+      }
       const el = document.createElement('div')
-      el.style.cssText = [
-        `width:${isSelected ? 34 : 28}px`,
-        `height:${isSelected ? 34 : 28}px`,
-        'border-radius:50%',
-        `background:${color}`,
-        `border:${isSelected ? '3px' : '2.5px'} solid white`,
-        'cursor:pointer',
-        'display:flex',
-        'align-items:center',
-        'justify-content:center',
-        'font-size:10px',
-        'color:white',
-        'font-weight:700',
-        `box-shadow:0 ${isSelected ? 4 : 2}px ${isSelected ? 16 : 8}px rgba(0,0,0,${isSelected ? 0.4 : 0.25})`,
-        'transition:all .15s',
-      ].join(';')
-      el.textContent = v.status === 'closed' ? '✕' : (v.is_open ? '✦' : '·')
       el.addEventListener('click', (e) => {
         e.stopPropagation()
-        onSelectVenue(isSelected ? null : v)
+        const cur = selectedRef.current
+        onSelectVenue(cur?.id === v.id ? null : v)
       })
-
-      const marker = new mapboxgl.Marker({ element: el })
-        .setLngLat([v.lng, v.lat])
-        .addTo(mapRef.current)
-
-      markersRef.current.push(marker)
+      styleMarkerEl(el, v, selectedRef.current?.id === v.id)
+      const marker = new mapboxgl.Marker({ element: el }).setLngLat([v.lng, v.lat]).addTo(mapRef.current)
+      markersRef.current.set(v.id, { marker, el, venue: v })
     })
-  }, [venues, collectionIds, reportedIds, selectedVenue, filter])
+  }, [venues, collectionIds, reportedIds, filter, mapReady])
+
+  // Restyle in place when the selection changes — no marker teardown.
+  useEffect(() => {
+    markersRef.current.forEach((entry, id) => {
+      styleMarkerEl(entry.el, entry.venue, selectedVenue?.id === id)
+    })
+  }, [selectedVenue])
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 }
@@ -206,7 +235,7 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
 function Explore({ venues, collectionIds, reported, onCollect, onFlag, onSubmit, venuesError, onRetry }) {
   const [selected, setSelected] = useState(null)
   const [filter, setFilter] = useState('all')
-  const reportedIds = reported.map(r => r.venue_id)
+  const reportedIds = useMemo(() => reported.map(r => r.venue_id), [reported])
 
   const listed = venues
     .filter(v => {
@@ -1115,7 +1144,7 @@ export default function App() {
   // Enrich collection with venue data
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
   const enrichedCollection = collection.map(item => ({ ...item, venue: venueMap[item.venue_id] }))
-  const collectionIds = collection.map(i => i.venue_id)
+  const collectionIds = useMemo(() => collection.map(i => i.venue_id), [collection])
 
   const phoneStyle = {
     maxWidth: 390,
