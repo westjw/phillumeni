@@ -13,6 +13,12 @@ alter table public.venues add column if not exists added_manually boolean defaul
 -- ─── §3: ranking — per-user Elo score on each collected venue ───────────
 alter table public.collections add column if not exists score numeric(3,1);
 
+-- Ranking (and the multi-photo re-collect path) write to a user's own rows,
+-- which needs an UPDATE policy collections never had.
+drop policy if exists "Users can update their own collections" on public.collections;
+create policy "Users can update their own collections"
+  on public.collections for update using (auth.uid() = user_id);
+
 create table if not exists public.comparisons (
   id serial primary key,
   user_id uuid references auth.users(id) on delete cascade not null,
