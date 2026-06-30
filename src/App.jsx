@@ -331,7 +331,11 @@ function Collection({ items, venues, onRemove }) {
               <i className="ti ti-arrow-left" style={{ fontSize: 13 }} /> Collection
             </button>
           </div>
-          <div style={{ width: '100%', height: 210, background: v.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 72 }}>{v.emoji}</div>
+          {detail.photo_url ? (
+            <img src={detail.photo_url} alt="Your matchbook" style={{ width: '100%', height: 210, objectFit: 'cover', display: 'block' }} />
+          ) : (
+            <div style={{ width: '100%', height: 210, background: v.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 72 }}>{v.emoji}</div>
+          )}
           <div style={{ padding: '16px 16px 28px' }}>
             <div style={{ fontSize: 19, fontWeight: 700, color: C.text, letterSpacing: '-.3px', marginBottom: 4 }}>{v.name}</div>
             <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>{v.address}</div>
@@ -339,9 +343,11 @@ function Collection({ items, venues, onRemove }) {
               <Tag label={`Collected ${new Date(detail.collected_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`} bg={C.greenBg} color={C.green} />
               <Tag label={v.type} bg={C.surface} color={C.sec} />
             </div>
-            <div style={{ background: C.surface, borderRadius: 12, padding: '10px 12px', fontSize: 12, color: C.sec, marginBottom: 14, lineHeight: 1.5 }}>
-              <i className="ti ti-camera" style={{ fontSize: 12, marginRight: 6, color: C.muted }} />Your photo of the matchbook
-            </div>
+            {!detail.photo_url && (
+              <div style={{ background: C.surface, borderRadius: 12, padding: '10px 12px', fontSize: 12, color: C.muted, marginBottom: 14, lineHeight: 1.5 }}>
+                <i className="ti ti-camera" style={{ fontSize: 12, marginRight: 6 }} />No photo for this one yet
+              </div>
+            )}
             <OutlineBtn onClick={() => { onRemove(detail.id); setDetail(null) }} color={C.red}>Remove from collection</OutlineBtn>
           </div>
         </div>
@@ -396,8 +402,8 @@ function Collection({ items, venues, onRemove }) {
         ) : view === 'grid' ? (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 2, padding: 2 }}>
             {collected.map(item => (
-              <div key={item.id} onClick={() => setDetail(item)} style={{ aspectRatio: '1', background: item.venue.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 30, cursor: 'pointer', position: 'relative' }}>
-                {item.venue.emoji}
+              <div key={item.id} onClick={() => setDetail(item)} style={{ aspectRatio: '1', background: item.photo_url ? `#000 url("${item.photo_url}") center/cover no-repeat` : (item.venue.bg_color || '#1A1A1A'), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 30, cursor: 'pointer', position: 'relative' }}>
+                {!item.photo_url && item.venue.emoji}
                 <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'linear-gradient(transparent,rgba(0,0,0,0.6))', padding: '14px 5px 5px' }}>
                   <div style={{ fontSize: 9, color: '#fff', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
                 </div>
@@ -408,7 +414,7 @@ function Collection({ items, venues, onRemove }) {
           <div style={{ padding: '0 16px' }}>
             {collected.map(item => (
               <div key={item.id} onClick={() => setDetail(item)} style={{ display: 'flex', gap: 11, alignItems: 'center', padding: '10px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
-                <div style={{ width: 52, height: 52, borderRadius: 10, background: item.venue.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>{item.venue.emoji}</div>
+                <div style={{ width: 52, height: 52, borderRadius: 10, background: item.photo_url ? `#000 url("${item.photo_url}") center/cover no-repeat` : (item.venue.bg_color || '#1A1A1A'), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>{!item.photo_url && item.venue.emoji}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
                   <div style={{ fontSize: 11, color: C.muted }}>{item.venue.neighborhood} · {item.venue.city}</div>
@@ -427,20 +433,43 @@ function Collection({ items, venues, onRemove }) {
 // ─── SUBMIT SCREEN ───────────────────────────────────────
 function Submit({ onBack, onAdded, user }) {
   const [step, setStep] = useState(1)
-  const [photo, setPhoto] = useState(false)
-  const [aiState, setAiState] = useState(null) // null | 'loading' | 'confirmed'
+  const [photoPreview, setPhotoPreview] = useState(null) // local object URL for preview
+  const [photoUrl, setPhotoUrl] = useState(null)         // uploaded public URL (stored on the collection)
+  const [uploading, setUploading] = useState(false)
+  const [uploadErr, setUploadErr] = useState('')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
   const [picked, setPicked] = useState(null)
   const [adding, setAdding] = useState(false)
   const searchTimer = useRef(null)
+  const fileInputRef = useRef(null)
 
-  const fakePhotoUpload = () => {
-    setPhoto(true)
-    setAiState('loading')
-    setTimeout(() => setAiState('confirmed'), 1400)
+  const handlePhotoSelect = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allow re-selecting the same file later
+    if (!file || !user) return
+    setUploadErr('')
+    setPhotoUrl(null)
+    setPhotoPreview(URL.createObjectURL(file))
+    setUploading(true)
+    try {
+      const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
+      const path = `${user.id}/${crypto.randomUUID()}.${ext}`
+      const { error: upErr } = await supabase.storage
+        .from('matchbooks')
+        .upload(path, file, { contentType: file.type || 'image/jpeg', upsert: false })
+      if (upErr) throw upErr
+      const { data } = supabase.storage.from('matchbooks').getPublicUrl(path)
+      setPhotoUrl(data.publicUrl)
+    } catch (err) {
+      console.error(err)
+      setUploadErr('Upload failed — retry, or continue without a photo.')
+    }
+    setUploading(false)
   }
+
+  const clearPhoto = () => { setPhotoPreview(null); setPhotoUrl(null); setUploadErr(''); setUploading(false) }
 
   const searchVenues = async (q) => {
     if (q.length < 2) { setResults([]); return }
@@ -503,7 +532,7 @@ function Submit({ onBack, onAdded, user }) {
       // Add to collection — capture the real row (serial id) and surface errors
       const { data: collectionRow, error: collErr } = await supabase
         .from('collections')
-        .insert({ user_id: user.id, venue_id: venue.id })
+        .insert({ user_id: user.id, venue_id: venue.id, photo_url: photoUrl })
         .select()
         .single()
       if (collErr) throw collErr
@@ -540,10 +569,19 @@ function Submit({ onBack, onAdded, user }) {
         {step === 1 && (
           <>
             <div style={{ fontSize: 20, fontWeight: 700, color: C.text, letterSpacing: '-.4px', marginBottom: 4 }}>Found a matchbook?</div>
-            <div style={{ fontSize: 13, color: C.muted, marginBottom: 20, lineHeight: 1.5 }}>Take a photo to verify and add it to the map instantly.</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 20, lineHeight: 1.5 }}>Add a photo of the matchbook for your collection. Optional — you can skip it.</div>
 
-            {!photo ? (
-              <div onClick={fakePhotoUpload} style={{ border: `2px dashed ${C.border}`, borderRadius: 18, height: 200, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, cursor: 'pointer', background: C.surface }}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={handlePhotoSelect}
+              style={{ display: 'none' }}
+            />
+
+            {!photoPreview ? (
+              <div onClick={() => fileInputRef.current?.click()} style={{ border: `2px dashed ${C.border}`, borderRadius: 18, height: 200, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, cursor: 'pointer', background: C.surface }}>
                 <div style={{ width: 60, height: 60, background: C.dark, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <i className="ti ti-camera" style={{ fontSize: 26, color: '#fff' }} />
                 </div>
@@ -551,25 +589,33 @@ function Submit({ onBack, onAdded, user }) {
                 <div style={{ fontSize: 12, color: C.muted }}>or upload from your library</div>
               </div>
             ) : (
-              <div style={{ borderRadius: 18, height: 200, background: '#2A2824', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, position: 'relative', marginBottom: 16 }}>
-                <div style={{ fontSize: 64 }}>🔥</div>
-                {aiState === 'loading' && (
+              <div style={{ borderRadius: 18, height: 200, background: '#2A2824', position: 'relative', overflow: 'hidden', marginBottom: 4 }}>
+                <img src={photoPreview} alt="Matchbook preview" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: uploading ? 0.6 : 1 }} />
+                {uploading && (
                   <div style={{ position: 'absolute', bottom: 14, left: '50%', transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.75)', borderRadius: 99, padding: '6px 16px', display: 'flex', alignItems: 'center', gap: 8 }}>
                     <div style={{ width: 10, height: 10, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.25)', borderTop: '2px solid #fff', animation: 'spin 1s linear infinite' }} />
-                    <span style={{ fontSize: 12, color: '#fff', fontWeight: 500 }}>Analyzing photo…</span>
+                    <span style={{ fontSize: 12, color: '#fff', fontWeight: 500 }}>Uploading…</span>
                   </div>
                 )}
-                {aiState === 'confirmed' && (
+                {!uploading && photoUrl && (
                   <div style={{ position: 'absolute', bottom: 14, left: '50%', transform: 'translateX(-50%)', background: 'rgba(26,148,112,0.92)', borderRadius: 99, padding: '6px 16px', display: 'flex', alignItems: 'center', gap: 6 }}>
                     <i className="ti ti-check" style={{ fontSize: 13, color: '#fff' }} />
-                    <span style={{ fontSize: 12, color: '#fff', fontWeight: 700 }}>Matchbook detected</span>
+                    <span style={{ fontSize: 12, color: '#fff', fontWeight: 700 }}>Photo added</span>
                   </div>
                 )}
-                <button onClick={() => { setPhoto(false); setAiState(null) }} style={{ position: 'absolute', top: 10, right: 10, background: 'rgba(0,0,0,0.5)', border: 'none', borderRadius: 99, padding: '4px 12px', fontSize: 11, color: '#fff', cursor: 'pointer' }}>Retake</button>
+                <button onClick={clearPhoto} style={{ position: 'absolute', top: 10, right: 10, background: 'rgba(0,0,0,0.5)', border: 'none', borderRadius: 99, padding: '4px 12px', fontSize: 11, color: '#fff', cursor: 'pointer' }}>Remove</button>
               </div>
             )}
-            <PrimaryBtn onClick={() => setStep(2)} disabled={aiState !== 'confirmed'} style={{ marginTop: 16 }}>
-              {aiState === 'loading' ? 'Verifying…' : aiState === 'confirmed' ? 'Next — find the venue' : 'Take a photo first'}
+
+            {uploadErr && (
+              <div style={{ fontSize: 12, color: C.red, marginTop: 8, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>{uploadErr}</span>
+                <button onClick={() => fileInputRef.current?.click()} style={{ background: 'none', border: 'none', color: C.amber, fontWeight: 700, cursor: 'pointer', fontSize: 12 }}>Retry</button>
+              </div>
+            )}
+
+            <PrimaryBtn onClick={() => setStep(2)} disabled={uploading} style={{ marginTop: 16 }}>
+              {uploading ? 'Uploading…' : photoUrl ? 'Next — find the venue' : 'Skip & find the venue'}
             </PrimaryBtn>
             <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
           </>
@@ -624,7 +670,7 @@ function Submit({ onBack, onAdded, user }) {
               <span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is live and in your collection. Everyone nearby can find it.
             </div>
             <PrimaryBtn onClick={onBack} style={{ marginBottom: 10 }}>Back to map</PrimaryBtn>
-            <OutlineBtn onClick={() => { setStep(1); setPhoto(false); setAiState(null); setQuery(''); setResults([]); setPicked(null) }}>Submit another</OutlineBtn>
+            <OutlineBtn onClick={() => { setStep(1); clearPhoto(); setQuery(''); setResults([]); setPicked(null) }}>Submit another</OutlineBtn>
           </div>
         )}
       </div>
@@ -676,8 +722,8 @@ function ProfileScreen({ user, collection, onSignOut }) {
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 2, padding: 2 }}>
             {collection.map(item => item.venue && (
-              <div key={item.id} style={{ aspectRatio: '1', background: item.venue.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, position: 'relative' }}>
-                {item.venue.emoji}
+              <div key={item.id} style={{ aspectRatio: '1', background: item.photo_url ? `#000 url("${item.photo_url}") center/cover no-repeat` : (item.venue.bg_color || '#1A1A1A'), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, position: 'relative' }}>
+                {!item.photo_url && item.venue.emoji}
                 <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'linear-gradient(transparent,rgba(0,0,0,0.6))', padding: '12px 4px 4px' }}>
                   <div style={{ fontSize: 9, color: '#fff', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
                 </div>
