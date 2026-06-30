@@ -78,7 +78,10 @@ create table venues (
   lng decimal(11,8) not null,
   created_at timestamptz default now(),
   created_by uuid references auth.users(id),
-  verified boolean default false
+  verified boolean default false,
+  mapbox_id text unique,                 -- stable Search Box POI id (dedup key)
+  status text not null default 'active' check (status in ('active','closed')),
+  closed_at timestamptz
 );
 
 alter table venues enable row level security;
@@ -132,6 +135,33 @@ create policy "Reports viewable by everyone"
 
 create policy "Authenticated users can report"
   on reports for insert with check (auth.uid() = user_id);
+
+-- Auto-close a venue once enough DISTINCT users report it unavailable.
+-- reports has unique(user_id, venue_id), so count(*) = distinct reporters.
+-- SECURITY DEFINER updates venues with no client-facing UPDATE policy.
+create or replace function close_venue_if_reported()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  reporter_count int;
+  threshold constant int := 3;
+begin
+  select count(*) into reporter_count from public.reports where venue_id = new.venue_id;
+  if reporter_count >= threshold then
+    update public.venues
+      set status = 'closed', closed_at = coalesce(closed_at, now())
+      where id = new.venue_id and status <> 'closed';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger on_report_close_check
+  after insert on reports
+  for each row execute function close_venue_if_reported();
 
 -- ─── FOLLOWS ────────────────────────────────────────────
 create table follows (

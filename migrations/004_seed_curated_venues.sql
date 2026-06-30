@@ -1,0 +1,32 @@
+-- Migration 004 — curated NYC matchbook venues (geocoded via Mapbox Search Box)
+-- Run ONCE in the Supabase SQL editor AFTER 003. Idempotent (on conflict mapbox_id).
+
+insert into public.venues
+  (name, address, neighborhood, city, type, emoji, bg_color, sources, lat, lng, mapbox_id, is_open, status, verified)
+values
+  ('Keens Steakhouse', '72 W 36th St., New York City', 'Garment District', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.750755, -73.986481, 'dXJuOm1ieHBvaTpiYzIzMmExMi1kYmQ3LTQ1MTYtOTM5MC02M2Y4YTA3YmM2MDc', true, 'active', true),
+  ('Peter Luger Steak House', '178 Broadway, New York City', 'Williamsburg', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.7098307, -73.9624935, 'dXJuOm1ieHBvaTowZDE5YmRjOC0zNWQ5LTQ3ZTEtODVlMy1mMzlkMzk5YzRlZjA', true, 'active', true),
+  ('The Polo Bar', '1 E 55th St, New York City', 'Midtown East', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.761555, -73.974396, 'dXJuOm1ieHBvaTowZmExNzJlMS1hMzgzLTQ5MzgtODM2Yy1hMzcxZmVlMzYyNTc', true, 'active', true),
+  ('Gramercy Tavern', '42 E 20th St, New York City', 'The Flatiron District', 'NYC', 'American Restaurant', '🔥', '#2A2824', array['Phillumeni Picks'], 40.738495, -73.988373, 'dXJuOm1ieHBvaTozMGM1ZDE1ZC1iMzYzLTRiNmUtODU0Mi1iNDAwZjlmYTYwNzg', true, 'active', true),
+  ('Sardi''s', '234 W 44th St #808, New York City', 'Theater District', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.75786265, -73.98758082, 'dXJuOm1ieHBvaTpkZTlkYjI3Zi01OGYzLTQ2ODYtYjcxOC1mODI0NTFjZTZmZmQ', true, 'active', true),
+  ('P.J. Clarke''s', '250 Vesey St, New York City', 'Battery Park City', 'NYC', 'American Restaurant', '🔥', '#2A2824', array['Phillumeni Picks'], 40.71444, -74.0158, 'dXJuOm1ieHBvaToyNzJmZDcwNC1kNDdlLTRiMTgtYTk2OC1kZGU0ZDYyODA5NjE', true, 'active', true),
+  ('King Cole Bar', 'Two E 55th St, New York City', 'Midtown East', 'NYC', 'Bar', '🔥', '#2A2824', array['Phillumeni Picks'], 40.761505, -73.974987, 'dXJuOm1ieHBvaTo3ZGVjNmEyNC0yOTRmLTQzOWMtYWRjNS0zNmZiMjU4MzBlNWY', true, 'active', true),
+  ('Pete''s Tavern', '129 E 18th St, New York City', 'Gramercy Park', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.736492, -73.98671, 'dXJuOm1ieHBvaTpiMjczZTQzNS05NTEyLTQyZTEtYWJjNC03YjJmODg5OGQ0MWE', true, 'active', true),
+  ('White Horse Tavern', '567 Hudson St, New York City', 'West Village', 'NYC', 'Bar', '🔥', '#2A2824', array['Phillumeni Picks'], 40.735638, -74.006209, 'dXJuOm1ieHBvaTo1M2MyMTMwNS01YzJjLTQwZGUtOTgyMC0yMTAwNGNhZWQxMmU', true, 'active', true),
+  ('Old Town Bar', '45 E 18th St, New York City', 'The Flatiron District', 'NYC', 'Bar', '🔥', '#2A2824', array['Phillumeni Picks'], 40.737611, -73.989158, 'dXJuOm1ieHBvaToyMDk1ZDFlZC0xMzQyLTQ2ZjYtODBhOS0zZDRiYzM2MGE2NmE', true, 'active', true),
+  ('McSorley''s Old Ale House', '15 E 7th St, New York City', 'East Village', 'NYC', 'Bar', '🔥', '#2A2824', array['Phillumeni Picks'], 40.728806, -73.989685, 'dXJuOm1ieHBvaTo2ZWU1MjE3Ni1iZmZkLTQxN2EtYTg2ZC04MmExMzNjNjZhYmU', true, 'active', true),
+  ('Katz''s Delicatessen', '205 East Houston Street, New York City', 'Lower East Side', 'NYC', 'Deli', '🔥', '#2A2824', array['Phillumeni Picks'], 40.7223419, -73.9873613, 'dXJuOm1ieHBvaTo3MDFkMGEyOS00ZGQ5LTQ4ZDktOWYyYy1kMTVjMTc2YThhYjI', true, 'active', true),
+  ('Via Carota', '51 Grove Street, New York City', 'West Village', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.7331259, -74.0036731, 'dXJuOm1ieHBvaTpmZjViYmRhMy0wMzM4LTQ0MmUtYTdlMy1jMzRmYzk1ZjJkYjM', true, 'active', true),
+  ('L''Artusi', '228 W 10th St, New York City', 'West Village', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.73386, -74.005188, 'dXJuOm1ieHBvaTowZDY5NDBkNy04MWMxLTRmNGEtOWUwZC1lYWJhMzhlNDJiZmU', true, 'active', true),
+  ('il Buco', '47 Bond St, New York City', 'NoHo', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.726022, -73.992786, 'dXJuOm1ieHBvaToxNmM0NGI1MC1kODk1LTQxNjItYTVhOC0zZTFhMjIzNTY0NzM', true, 'active', true),
+  ('Pastis', '52 Gansevoort St, New York City', 'West Village', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.739243, -74.007011, 'dXJuOm1ieHBvaTo3ZTk5MzFmNC1kZjQ5LTQxODQtYmE4Mi03NWNjMDUyYWQzNzQ', true, 'active', true),
+  ('Maison Premiere', '298 Bedford Ave, New York City', 'Williamsburg', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.714269, -73.961665, 'dXJuOm1ieHBvaTpkYmJiNzk1YS1iNTAzLTQ0NTktODcyZi05YTFmYTc0NjRmNjU', true, 'active', true),
+  ('Death and Co East Village', '433 E 6th St, New York City', 'Alphabet City', 'NYC', 'Bar', '🔥', '#2A2824', array['Phillumeni Picks'], 40.72592, -73.984645, 'dXJuOm1ieHBvaTozZTViMmRlOS02YTdiLTQ1MWItYWE1MS0zNGUyYTU5ZWMxY2Q', true, 'active', true),
+  ('Smith & Wollensky', '797 3rd Ave, New York City', 'Turtle Bay', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.755264, -73.970955, 'dXJuOm1ieHBvaTpjNWRlODA5MC1kZmNmLTRlY2YtYWFlZC1hMjRlOTgwYjZmYTM', true, 'active', true),
+  ('Sparks Steak House', '210 E 46th St, New York City', 'Turtle Bay', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.752975, -73.972069, 'dXJuOm1ieHBvaTo5OTc3NmFhOS1mYWU5LTQxY2YtOTUwNS1iOGQ2YmMxYjNmZTk', true, 'active', true),
+  ('Gallaghers Steakhouse', '228 West 52nd Street, New York City', 'Theater District', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.7628467, -73.9838618, 'dXJuOm1ieHBvaTpmN2ZlNmZjNi1lM2NmLTQ4NjUtOWY0MC0yZWU2NDM0MzA5ZDE', true, 'active', true),
+  ('Carbone New York', '181 Thompson St, New York City', 'Greenwich Village', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.728085, -74.000237, 'dXJuOm1ieHBvaTo3ZDM0MmQ0Ni1mMmY5LTQ0ZTAtOTM4Zi0wNmE5YjUwOGRiOTY', true, 'active', true),
+  ('Rao''s', '455 E 114th St, New York City', 'East Harlem', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.793884, -73.934212, 'dXJuOm1ieHBvaTo5NDNhYTk2Mi03Yjg1LTQ3ZjItYWU1YS1hN2MwOGIyNTFjOGE', true, 'active', true),
+  ('Sant Ambroeus Brookfield', '230 Vesey St, New York City', 'Battery Park City', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.713509, -74.014536, 'dXJuOm1ieHBvaToyMmUxODFjZC1hZDYwLTQ1N2UtYmEwMy1kYjMyNTk3Njg4NjY', true, 'active', true),
+  ('The Grill', 'Seagram Building, New York City', 'Midtown East', 'NYC', 'Food', '🔥', '#2A2824', array['Phillumeni Picks'], 40.758, -73.971846, 'dXJuOm1ieHBvaTphOTdmYzcxOS0yYWQxLTRmNDktYTNmNy1hOGQzOWY4ZDE0MmE', true, 'active', true)
+on conflict (mapbox_id) do nothing;

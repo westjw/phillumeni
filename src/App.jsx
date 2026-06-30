@@ -24,6 +24,7 @@ const C = {
 }
 
 const pinColor = (v) => {
+  if (v.status === 'closed') return C.muted
   if (v.sources?.length >= 2) return C.amber
   if (!v.is_open) return '#9C9990'
   return C.green
@@ -158,9 +159,9 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
     const visible = venues.filter(v => {
       if (collectionIds.includes(v.id)) return false
       if (reportedIds.includes(v.id)) return false
-      if (filter === 'open') return v.is_open
+      if (filter === 'open') return v.is_open && v.status !== 'closed'
       if (filter === 'multi') return (v.sources || []).length >= 2
-      return true
+      return true // closed venues stay visible (grey) as history
     })
 
     visible.forEach(v => {
@@ -184,7 +185,7 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
         `box-shadow:0 ${isSelected ? 4 : 2}px ${isSelected ? 16 : 8}px rgba(0,0,0,${isSelected ? 0.4 : 0.25})`,
         'transition:all .15s',
       ].join(';')
-      el.textContent = v.is_open ? '✦' : '·'
+      el.textContent = v.status === 'closed' ? '✕' : (v.is_open ? '✦' : '·')
       el.addEventListener('click', (e) => {
         e.stopPropagation()
         onSelectVenue(isSelected ? null : v)
@@ -211,6 +212,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onSubmit,
     .filter(v => {
       if (collectionIds.includes(v.id)) return false
       if (reportedIds.includes(v.id)) return false
+      if (v.status === 'closed') return false // closed venues aren't collectable
       if (filter === 'open') return v.is_open
       if (filter === 'multi') return (v.sources || []).length >= 2
       return true
@@ -270,17 +272,25 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onSubmit,
               </div>
             </div>
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 10 }}>
-              <Tag label={selected.is_open ? 'Open now' : 'Closed'} bg={selected.is_open ? C.greenBg : C.surface} color={selected.is_open ? C.green : C.muted} />
+              {selected.status === 'closed'
+                ? <Tag label="Closed" bg={C.redBg} color={C.red} />
+                : <Tag label={selected.is_open ? 'Open now' : 'Closed'} bg={selected.is_open ? C.greenBg : C.surface} color={selected.is_open ? C.green : C.muted} />}
               <Tag label={selected.type || 'Spot'} bg={C.surface} color={C.sec} />
-              {(selected.sources || []).length >= 2 && <Tag label={`${selected.sources.length} sources`} bg={C.amberBg} color={C.amber} />}
+              {selected.status !== 'closed' && (selected.sources || []).length >= 2 && <Tag label={`${selected.sources.length} sources`} bg={C.amberBg} color={C.amber} />}
             </div>
-            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 10 }}>
-              {(selected.sources || []).map(s => (
-                <span key={s} style={{ fontSize: 10, padding: '2px 8px', borderRadius: 99, background: C.surface, border: `0.5px solid ${C.border}`, color: C.sec }}>{s}</span>
-              ))}
-            </div>
+            {selected.status !== 'closed' && (
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 10 }}>
+                {(selected.sources || []).map(s => (
+                  <span key={s} style={{ fontSize: 10, padding: '2px 8px', borderRadius: 99, background: C.surface, border: `0.5px solid ${C.border}`, color: C.sec }}>{s}</span>
+                ))}
+              </div>
+            )}
             {selected.note && <div style={{ fontSize: 12, color: C.muted, fontStyle: 'italic', marginBottom: 14, lineHeight: 1.5 }}>{selected.note}</div>}
-            {reportedIds.includes(selected.id) ? (
+            {selected.status === 'closed' ? (
+              <div style={{ padding: 12, background: C.surface, borderRadius: 12, fontSize: 13, color: C.sec, textAlign: 'center', fontWeight: 500, lineHeight: 1.5 }}>
+                This spot has closed — its matchbooks are now collector's items.
+              </div>
+            ) : reportedIds.includes(selected.id) ? (
               <div style={{ padding: 12, background: C.redBg, borderRadius: 12, fontSize: 13, color: C.red, textAlign: 'center', fontWeight: 500 }}>Reported as unavailable</div>
             ) : (
               <>
@@ -359,6 +369,7 @@ function Collection({ items, venues, onRemove }) {
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 14 }}>
               <Tag label={`Collected ${new Date(detail.collected_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`} bg={C.greenBg} color={C.green} />
               <Tag label={v.type || 'Spot'} bg={C.surface} color={C.sec} />
+              {v.status === 'closed' && <Tag label="Closed — collector's item" bg={C.redBg} color={C.red} />}
             </div>
             {!detail.photo_url && (
               <div style={{ background: C.surface, borderRadius: 12, padding: '10px 12px', fontSize: 12, color: C.muted, marginBottom: 14, lineHeight: 1.5 }}>
@@ -421,6 +432,9 @@ function Collection({ items, venues, onRemove }) {
             {collected.map(item => (
               <div key={item.id} onClick={() => setDetail(item)} style={{ aspectRatio: '1', background: item.photo_url ? `#000 url("${item.photo_url}") center/cover no-repeat` : (item.venue.bg_color || '#1A1A1A'), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 30, cursor: 'pointer', position: 'relative' }}>
                 {!item.photo_url && item.venue.emoji}
+                {item.venue.status === 'closed' && (
+                  <div style={{ position: 'absolute', top: 4, left: 4, background: 'rgba(0,0,0,0.72)', color: '#fff', fontSize: 8, fontWeight: 700, letterSpacing: .3, padding: '1px 5px', borderRadius: 99 }}>CLOSED</div>
+                )}
                 <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'linear-gradient(transparent,rgba(0,0,0,0.6))', padding: '14px 5px 5px' }}>
                   <div style={{ fontSize: 9, color: '#fff', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
                 </div>
@@ -434,7 +448,10 @@ function Collection({ items, venues, onRemove }) {
                 <div style={{ width: 52, height: 52, borderRadius: 10, background: item.photo_url ? `#000 url("${item.photo_url}") center/cover no-repeat` : (item.venue.bg_color || '#1A1A1A'), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>{!item.photo_url && item.venue.emoji}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
-                  <div style={{ fontSize: 11, color: C.muted }}>{item.venue.neighborhood ? `${item.venue.neighborhood} · ${item.venue.city}` : item.venue.city}</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>
+                    {item.venue.neighborhood ? `${item.venue.neighborhood} · ${item.venue.city}` : item.venue.city}
+                    {item.venue.status === 'closed' && <span style={{ color: C.red, fontWeight: 700 }}> · Closed</span>}
+                  </div>
                 </div>
                 <div style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>{new Date(item.collected_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
               </div>
@@ -538,21 +555,38 @@ function Submit({ onBack, onAdded, user }) {
     setAdding(true)
     setAddErr('')
     try {
-      // Search Box suggestions carry no coordinates — retrieve them before saving
-      const res = await fetch(
-        `https://api.mapbox.com/search/searchbox/v1/retrieve/${picked.mapbox_id}` +
-        `?session_token=${getSession()}&access_token=${MAPBOX_TOKEN}`
-      )
-      if (!res.ok) throw new Error('Could not load that place — pick another.')
-      const retrieved = await res.json()
-      const coords = retrieved.features?.[0]?.geometry?.coordinates
-      if (!coords || coords.length < 2) throw new Error('No location found for that place.')
-      const [lng, lat] = coords
+      // Dedup by mapbox_id — tolerate the column not existing yet (pre-migration 003)
+      let venue = null
+      let dedupOn = true
+      const { data: existing, error: existErr } = await supabase
+        .from('venues').select('*').eq('mapbox_id', picked.mapbox_id).maybeSingle()
+      if (existErr) {
+        if (existErr.code === '42703' || /mapbox_id/.test(existErr.message || '')) {
+          dedupOn = false // column not migrated yet → fall back to a plain insert
+        } else {
+          throw existErr
+        }
+      } else {
+        venue = existing
+      }
 
-      // Insert venue into Supabase
-      const { data: venue, error: venueErr } = await supabase
-        .from('venues')
-        .insert({
+      if (venue?.status === 'closed') {
+        throw new Error('That spot is marked closed and can’t be collected.')
+      }
+
+      if (!venue) {
+        // New venue — Search Box suggestions carry no coordinates, so retrieve them
+        const res = await fetch(
+          `https://api.mapbox.com/search/searchbox/v1/retrieve/${picked.mapbox_id}` +
+          `?session_token=${getSession()}&access_token=${MAPBOX_TOKEN}`
+        )
+        if (!res.ok) throw new Error('Could not load that place — pick another.')
+        const retrieved = await res.json()
+        const coords = retrieved.features?.[0]?.geometry?.coordinates
+        if (!coords || coords.length < 2) throw new Error('No location found for that place.')
+        const [lng, lat] = coords
+
+        const venueRow = {
           name: picked.name,
           address: picked.address.split(',').slice(0, 2).join(','),
           neighborhood: picked.address.split(',')[1]?.trim() || 'NYC',
@@ -565,11 +599,32 @@ function Submit({ onBack, onAdded, user }) {
           sources: ['Submitted by ' + (user.email?.split('@')[0] || 'user')],
           created_by: user.id,
           verified: false,
-        })
-        .select()
-        .single()
+        }
+        if (dedupOn) venueRow.mapbox_id = picked.mapbox_id
 
-      if (venueErr) throw venueErr
+        const { data: inserted, error: venueErr } = await supabase
+          .from('venues').insert(venueRow).select().single()
+
+        if (venueErr) {
+          // Another user created it first (unique mapbox_id) — use theirs
+          if (dedupOn && venueErr.code === '23505') {
+            const { data: raced } = await supabase
+              .from('venues').select('*').eq('mapbox_id', picked.mapbox_id).maybeSingle()
+            if (!raced) throw venueErr
+            venue = raced
+          } else {
+            throw venueErr
+          }
+        } else {
+          venue = inserted
+        }
+      }
+
+      // Re-check on the final venue (the create-race path may have resolved to a
+      // row that was auto-closed since the search) before collecting.
+      if (venue?.status === 'closed') {
+        throw new Error('That spot is marked closed and can’t be collected.')
+      }
 
       // Add to collection — capture the real row (serial id) and surface errors
       const { data: collectionRow, error: collErr } = await supabase
@@ -577,9 +632,28 @@ function Submit({ onBack, onAdded, user }) {
         .insert({ user_id: user.id, venue_id: venue.id, photo_url: photoUrl })
         .select()
         .single()
-      if (collErr) throw collErr
 
-      onAdded(venue, collectionRow)
+      let savedRow = collectionRow
+      if (collErr) {
+        // unique(user_id, venue_id): already collected. Treat as success, but if a
+        // new photo was uploaded this round, attach it to the existing row.
+        if (collErr.code === '23505') {
+          if (photoUrl) {
+            const { data: updated } = await supabase
+              .from('collections')
+              .update({ photo_url: photoUrl })
+              .eq('user_id', user.id).eq('venue_id', venue.id)
+              .select().single()
+            savedRow = updated || null
+          } else {
+            savedRow = null
+          }
+        } else {
+          throw collErr
+        }
+      }
+
+      onAdded(venue, savedRow || null)
       sessionRef.current = '' // start a fresh billing session for the next submit
       setStep(3)
     } catch (e) {
@@ -775,6 +849,9 @@ function ProfileScreen({ user, collection, nycTotal, onSignOut }) {
             {collection.map(item => item.venue && (
               <div key={item.id} style={{ aspectRatio: '1', background: item.photo_url ? `#000 url("${item.photo_url}") center/cover no-repeat` : (item.venue.bg_color || '#1A1A1A'), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, position: 'relative' }}>
                 {!item.photo_url && item.venue.emoji}
+                {item.venue.status === 'closed' && (
+                  <div style={{ position: 'absolute', top: 4, left: 4, background: 'rgba(0,0,0,0.72)', color: '#fff', fontSize: 8, fontWeight: 700, letterSpacing: .3, padding: '1px 5px', borderRadius: 99 }}>CLOSED</div>
+                )}
                 <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'linear-gradient(transparent,rgba(0,0,0,0.6))', padding: '12px 4px 4px' }}>
                   <div style={{ fontSize: 9, color: '#fff', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
                 </div>
@@ -1018,8 +1095,14 @@ export default function App() {
   }
 
   const handleAdded = (newVenue, collectionRow) => {
-    setVenues(prev => [...prev, newVenue])
-    if (collectionRow) setCollection(prev => [collectionRow, ...prev])
+    // newVenue may already exist locally (dedup link), so upsert rather than append
+    setVenues(prev => (prev.some(v => v.id === newVenue.id) ? prev : [...prev, newVenue]))
+    if (collectionRow) {
+      // replace in place if it already exists (e.g. a re-collect that added a photo)
+      setCollection(prev => (prev.some(c => c.id === collectionRow.id)
+        ? prev.map(c => (c.id === collectionRow.id ? collectionRow : c))
+        : [collectionRow, ...prev]))
+    }
   }
 
   const handleSignOut = async () => {
