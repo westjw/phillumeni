@@ -1,5 +1,8 @@
 -- phillumeni database schema
 -- Paste this entire file into Supabase SQL Editor and click Run
+--
+-- ZERO-SEED BY DESIGN (spec §0): do NOT run seed.sql. Every venue must enter
+-- through the real Submit flow. A fresh, empty map is the correct day-one state.
 
 -- ─── PROFILES ───────────────────────────────────────────
 create table profiles (
@@ -8,6 +11,7 @@ create table profiles (
   display_name text,
   bio text,
   home_city text default 'NYC',
+  is_admin boolean default false,        -- gates the moderation screens
   created_at timestamptz default now()
 );
 
@@ -81,7 +85,8 @@ create table venues (
   verified boolean default false,
   mapbox_id text unique,                 -- stable Search Box POI id (dedup key)
   status text not null default 'active' check (status in ('active','closed')),
-  closed_at timestamptz
+  closed_at timestamptz,
+  added_manually boolean default false   -- via the "can't find it" manual entry
 );
 
 alter table venues enable row level security;
@@ -105,6 +110,7 @@ create table collections (
   venue_id integer references venues(id) on delete cascade not null,
   photo_url text,                         -- cover photo (= photos[0])
   photos text[] not null default '{}',    -- all matchbook photos
+  score numeric(3,1),                     -- per-user Elo ranking (0.0–10.0)
   collected_at timestamptz default now(),
   unique(user_id, venue_id)
 );
@@ -182,3 +188,45 @@ create policy "Users manage their own follows"
 
 create policy "Users can unfollow"
   on follows for delete using (auth.uid() = follower_id);
+
+-- ─── COMPARISONS (ranking audit log) ─────────────────────
+create table comparisons (
+  id serial primary key,
+  user_id uuid references auth.users(id) on delete cascade not null,
+  winner_venue_id integer references venues(id) on delete cascade not null,
+  loser_venue_id integer references venues(id) on delete cascade not null,
+  created_at timestamptz default now()
+);
+alter table comparisons enable row level security;
+create policy "Users can view their own comparisons"
+  on comparisons for select using (auth.uid() = user_id);
+create policy "Users can log their own comparisons"
+  on comparisons for insert with check (auth.uid() = user_id);
+
+-- ─── FAKE REPORTS (fraud claims → human review) ──────────
+create table fake_reports (
+  id serial primary key,
+  reporter_id uuid references auth.users(id) on delete cascade not null,
+  venue_id integer references venues(id) on delete cascade not null,
+  reason text,
+  status text not null default 'pending' check (status in ('pending','accepted','rejected')),
+  resolved_by uuid references auth.users(id),
+  resolved_at timestamptz,
+  created_at timestamptz default now()
+);
+alter table fake_reports enable row level security;
+create policy "Reporters can view their own fake reports"
+  on fake_reports for select using (auth.uid() = reporter_id);
+create policy "Authenticated users can file a fake report"
+  on fake_reports for insert with check (auth.uid() = reporter_id);
+create policy "Admins can view all fake reports"
+  on fake_reports for select
+  using (exists (select 1 from profiles p where p.id = auth.uid() and p.is_admin));
+create policy "Admins can resolve fake reports"
+  on fake_reports for update
+  using (exists (select 1 from profiles p where p.id = auth.uid() and p.is_admin));
+
+-- Admins can delete any venue (moderation "Accept — remove").
+create policy "Admins can delete any venue"
+  on venues for delete
+  using (exists (select 1 from profiles p where p.id = auth.uid() and p.is_admin));

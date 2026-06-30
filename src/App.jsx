@@ -330,6 +330,16 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onSubmit,
               </>
             )}
           </div>
+        ) : venues.length === 0 && !venuesError ? (
+          // Day-zero: a real, designed empty state — not a fallback (spec §1)
+          <div style={{ textAlign: 'center', padding: '30px 26px 40px' }}>
+            <i className="ti ti-map-pin" style={{ fontSize: 40, color: C.borderStr }} />
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.text, letterSpacing: '-.4px', margin: '12px 0 8px' }}>Nothing here yet</div>
+            <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.6, marginBottom: 22 }}>
+              Every matchbook on this map was found by a real person. Be the first in NYC.
+            </div>
+            <PrimaryBtn onClick={onSubmit}>Submit the first one</PrimaryBtn>
+          </div>
         ) : (
           <div style={{ padding: '12px 16px 8px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
