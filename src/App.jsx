@@ -126,23 +126,25 @@ function MbIcon({ size = 40 }) {
 
 // ─── MAPBOX MAP ──────────────────────────────────────────
 // Style a marker's DOM element for its venue + selected state (no recreation).
+// IMPORTANT: set individual style props, never el.style.cssText — Mapbox owns
+// the element's `transform` (its geographic position), and clobbering cssText
+// would wipe it, making the marker jump across the map on every restyle.
 function styleMarkerEl(el, v, isSelected, collected) {
-  el.style.cssText = [
-    `width:${isSelected ? 34 : 28}px`,
-    `height:${isSelected ? 34 : 28}px`,
-    'border-radius:50%',
-    `background:${pinColor(v, collected)}`,
-    `border:${isSelected ? '3px' : '2.5px'} solid white`,
-    'cursor:pointer',
-    'display:flex',
-    'align-items:center',
-    'justify-content:center',
-    'font-size:10px',
-    'color:white',
-    'font-weight:700',
-    `box-shadow:0 ${isSelected ? 4 : 2}px ${isSelected ? 16 : 8}px rgba(0,0,0,${isSelected ? 0.4 : 0.25})`,
-    'transition:all .15s',
-  ].join(';')
+  const s = el.style
+  s.width = s.height = `${isSelected ? 34 : 28}px`
+  s.borderRadius = '50%'
+  s.background = pinColor(v, collected)
+  s.border = `${isSelected ? '3px' : '2.5px'} solid white`
+  s.cursor = 'pointer'
+  s.display = 'flex'
+  s.alignItems = 'center'
+  s.justifyContent = 'center'
+  s.fontSize = '10px'
+  s.color = 'white'
+  s.fontWeight = '700'
+  s.boxShadow = `0 ${isSelected ? 4 : 2}px ${isSelected ? 16 : 8}px rgba(0,0,0,${isSelected ? 0.4 : 0.25})`
+  // Animate size/shadow only — NOT transform, or position changes would slide.
+  s.transition = 'width .15s, height .15s, background .15s, box-shadow .15s, border .15s'
   el.textContent = v.status === 'closed' ? '✕' : collected ? '✓' : '✦'
 }
 
