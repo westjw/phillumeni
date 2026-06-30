@@ -12,6 +12,7 @@ create table profiles (
   bio text,
   home_city text default 'NYC',
   is_admin boolean default false,        -- gates the moderation screens
+  referred_by text,                      -- user id whose invite link they joined through
   created_at timestamptz default now()
 );
 
@@ -283,3 +284,66 @@ $$;
 
 revoke execute on function venue_photos(integer) from public;
 grant execute on function venue_photos(integer) to authenticated;
+
+-- ─── REFERRALS ───────────────────────────────────────────
+-- How many people I referred via my invite link. profiles are owner-only, so a
+-- SECURITY DEFINER aggregate returns just the count (no identities).
+create or replace function my_referral_count()
+returns integer
+language sql
+security definer
+stable
+set search_path = ''
+as $$
+  select count(*)::int
+  from public.profiles
+  where referred_by = auth.uid()::text
+    and id <> auth.uid();
+$$;
+
+revoke execute on function my_referral_count() from public;
+grant execute on function my_referral_count() to authenticated;
+
+-- ─── FOLLOW GRAPH ────────────────────────────────────────
+-- profiles/collections are owner-only, so showing a followed collector's handle
+-- + count needs SECURITY DEFINER reads. Authenticated-only; return just a
+-- username + public count.
+create or replace function following_list()
+returns table (id uuid, username text, matchbooks integer)
+language sql
+security definer
+stable
+set search_path = ''
+as $$
+  select p.id, p.username,
+         (select count(*)::int from public.collections c where c.user_id = p.id)
+  from public.follows f
+  join public.profiles p on p.id = f.following_id
+  where f.follower_id = auth.uid()
+  order by p.username;
+$$;
+
+revoke execute on function following_list() from public;
+grant execute on function following_list() to authenticated;
+
+create or replace function search_collectors(q text)
+returns table (id uuid, username text, matchbooks integer, is_following boolean)
+language sql
+security definer
+stable
+set search_path = ''
+as $$
+  select p.id, p.username,
+         (select count(*)::int from public.collections c where c.user_id = p.id),
+         exists (select 1 from public.follows f where f.follower_id = auth.uid() and f.following_id = p.id)
+  from public.profiles p
+  where p.id <> auth.uid()
+    and p.username is not null
+    and length(trim(coalesce(q, ''))) >= 1
+    and p.username ilike replace(replace(replace(q, '\', '\\'), '%', '\%'), '_', '\_') || '%'
+  order by p.username
+  limit 20;
+$$;
+
+revoke execute on function search_collectors(text) from public;
+grant execute on function search_collectors(text) to authenticated;

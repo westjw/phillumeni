@@ -1449,27 +1449,10 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onSheetOpenChange 
 }
 
 // ─── PROFILE SCREEN ──────────────────────────────────────
-function ProfileScreen({ user, collection, nycTotal, onSignOut, isAdmin, pendingReports = 0, onOpenAdmin }) {
+function ProfileScreen({ user, collection, nycTotal, onSignOut, isAdmin, pendingReports = 0, onOpenAdmin, onOpenInvite, following = [], onUnfollow, onOpenFind }) {
   const nyc = collection.filter(i => i.venue?.city === 'NYC')
   const nycGoal = Math.max(nycTotal || 0, nyc.length, 1)
   const username = user.user_metadata?.username || user.email?.split('@')[0] || 'collector'
-  const [copied, setCopied] = useState(false)
-
-  // Web Share works in iOS Safari / standalone PWAs — opens the native share
-  // sheet so the user can text/DM the invite. Falls back to copying the link.
-  const inviteFriends = async () => {
-    const url = (typeof window !== 'undefined' && window.location?.origin) || 'https://phillumeni.vercel.app'
-    const text = "I'm collecting matchbooks on Phillumeni — come hunt with me."
-    try {
-      if (navigator.share) {
-        await navigator.share({ title: 'Phillumeni', text, url })
-      } else {
-        await navigator.clipboard.writeText(`${text} ${url}`)
-        setCopied(true)
-        setTimeout(() => setCopied(false), 2000)
-      }
-    } catch { /* user dismissed the share sheet — no-op */ }
-  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
@@ -1483,10 +1466,36 @@ function ProfileScreen({ user, collection, nycTotal, onSignOut, isAdmin, pending
           <div style={{ fontSize: 18, fontWeight: 700, color: C.text, letterSpacing: '-.3px', marginBottom: 2 }}>{username}</div>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>{user.email}</div>
 
-          <button onClick={inviteFriends} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 13, marginBottom: 14, background: C.dark, color: '#fff', border: 'none', borderRadius: 12, fontSize: 14, fontWeight: 700, cursor: 'pointer', letterSpacing: '-.1px' }}>
-            <i className={`ti ${copied ? 'ti-check' : 'ti-user-plus'}`} style={{ fontSize: 16 }} />
-            {copied ? 'Link copied' : 'Invite friends'}
+          <button onClick={onOpenInvite} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 13, marginBottom: 14, background: C.dark, color: '#fff', border: 'none', borderRadius: 12, fontSize: 14, fontWeight: 700, cursor: 'pointer', letterSpacing: '-.1px' }}>
+            <i className="ti ti-user-plus" style={{ fontSize: 16 }} />
+            Invite friends
           </button>
+
+          {/* Following — collectors you follow */}
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: following.length ? 8 : 0 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.4px' }}>
+                FOLLOWING{following.length ? ` · ${following.length}` : ''}
+              </div>
+              <button onClick={onOpenFind} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', cursor: 'pointer', color: C.amber, fontSize: 12, fontWeight: 700 }}>
+                <i className="ti ti-search" style={{ fontSize: 13 }} />Find collectors
+              </button>
+            </div>
+            {following.length === 0 ? (
+              <div style={{ fontSize: 12.5, color: C.muted, lineHeight: 1.5, marginTop: 4 }}>Follow other collectors to see them here.</div>
+            ) : (
+              following.map(f => (
+                <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `0.5px solid ${C.border}` }}>
+                  <div style={{ width: 34, height: 34, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(f.username || '?').slice(0, 2).toUpperCase()}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.username}</div>
+                    <div style={{ fontSize: 11, color: C.muted }}>{f.matchbooks} {f.matchbooks === 1 ? 'matchbook' : 'matchbooks'}</div>
+                  </div>
+                  <button onClick={() => onUnfollow?.(f.id)} style={{ flexShrink: 0, fontSize: 11.5, fontWeight: 700, padding: '5px 12px', borderRadius: 99, border: `1px solid ${C.border}`, background: 'transparent', color: C.sec, cursor: 'pointer' }}>Following</button>
+                </div>
+              ))
+            )}
+          </div>
 
           {isAdmin && (
             <button onClick={onOpenAdmin} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', marginBottom: 14, background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, cursor: 'pointer', boxShadow: '0 1px 6px rgba(0,0,0,0.06)' }}>
@@ -1542,6 +1551,163 @@ function ProfileScreen({ user, collection, nycTotal, onSignOut, isAdmin, pending
           </div>
         )}
         <div style={{ height: 24 }} />
+      </div>
+    </div>
+  )
+}
+
+// ─── INVITE SCREEN ───────────────────────────────────────
+// PWA invite: a personal link ({origin}/?invite=<username>) + the native share
+// sheet (Web Share, works on iOS Safari/PWA). Contacts + "who's on the app"
+// matching is the native-app milestone, not this.
+function InviteScreen({ user, onBack }) {
+  // Key the referral on the stable user id, not username — usernames get suffixed
+  // on collision (handle_new_user) and can be reused after deletion, which would
+  // break/mis-credit the count. The id is unambiguous and permanent.
+  const origin = (typeof window !== 'undefined' && window.location?.origin) || 'https://phillumeni.vercel.app'
+  const link = `${origin}/?invite=${user.id}`
+  const [copied, setCopied] = useState(false)
+  const [joined, setJoined] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    supabase.rpc('my_referral_count').then(({ data, error }) => {
+      if (!cancelled && !error && typeof data === 'number') setJoined(data)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const flash = () => { setCopied(true); setTimeout(() => setCopied(false), 2000) }
+  const copyLink = async () => {
+    try { await navigator.clipboard.writeText(link); flash() } catch { /* clipboard blocked */ }
+  }
+  const share = async () => {
+    const text = "I'm collecting matchbooks on Phillumeni — come hunt with me."
+    try {
+      if (navigator.share) await navigator.share({ title: 'Phillumeni', text, url: link })
+      else { await navigator.clipboard.writeText(`${text} ${link}`); flash() }
+    } catch { /* user dismissed the share sheet */ }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: C.bg }}>
+      <SBar />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px 0', flexShrink: 0 }}>
+        <button onClick={onBack} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, color: C.amber, fontSize: 13, fontWeight: 700 }}>
+          <i className="ti ti-arrow-left" style={{ fontSize: 14 }} />Profile
+        </button>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px 24px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', marginBottom: 22 }}>
+          <div style={{ width: 56, height: 56, borderRadius: '50%', background: C.amberBg, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
+            <i className="ti ti-users" style={{ fontSize: 26, color: C.amber }} />
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 6 }}>Invite friends</div>
+          <div style={{ fontSize: 13.5, color: C.muted, lineHeight: 1.5, maxWidth: 260 }}>It's a better hunt when your people are collecting too.</div>
+        </div>
+
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.4px', marginBottom: 7 }}>YOUR INVITE LINK</div>
+        <div onClick={copyLink} style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, padding: '12px 14px', cursor: 'pointer', marginBottom: 12 }}>
+          <i className="ti ti-link" style={{ fontSize: 16, color: C.muted, flexShrink: 0 }} />
+          <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{link.replace(/^https?:\/\//, '')}</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: copied ? C.green : C.amber, flexShrink: 0 }}>{copied ? 'Copied' : 'Copy'}</span>
+        </div>
+
+        <PrimaryBtn onClick={share}>
+          <i className="ti ti-share" style={{ fontSize: 15, marginRight: 7 }} />Invite via Messages
+        </PrimaryBtn>
+        <div style={{ fontSize: 11.5, color: C.muted, textAlign: 'center', marginTop: 10, lineHeight: 1.5 }}>
+          Opens your share sheet — pick Messages, WhatsApp, anyone.
+        </div>
+
+        {joined != null && joined > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginTop: 22, padding: '12px 14px', background: C.surface, borderRadius: 12 }}>
+            <i className="ti ti-gift" style={{ fontSize: 18, color: C.amber }} />
+            <span style={{ fontSize: 13, color: C.sec }}>
+              <span style={{ fontWeight: 700, color: C.text }}>{joined}</span> {joined === 1 ? 'friend has' : 'friends have'} joined from your link
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── FIND COLLECTORS (follow discovery) ──────────────────
+// Username search → follow/unfollow. Reads come from a SECURITY DEFINER RPC
+// (profiles are owner-only); follows are written directly under their own RLS.
+function FindCollectors({ onFollow, onUnfollow, onBack }) {
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState([])
+  const [searching, setSearching] = useState(false)
+  const [busyId, setBusyId] = useState(null)
+  const [err, setErr] = useState('')
+  const timer = useRef(null)
+  const seq = useRef(0)
+
+  const search = async (raw) => {
+    const term = raw.trim()
+    const my = ++seq.current // bump first so clearing the box invalidates in-flight queries
+    if (term.length < 1) { setResults([]); setSearching(false); return }
+    setSearching(true)
+    setErr('')
+    const { data, error } = await supabase.rpc('search_collectors', { q: term })
+    if (my !== seq.current) return
+    setSearching(false)
+    if (error) { setResults([]); setErr('Couldn’t search right now. Try again.'); return }
+    setResults(data || [])
+  }
+  const onChange = (v) => { setQ(v); clearTimeout(timer.current); timer.current = setTimeout(() => search(v), 350) }
+
+  const toggle = async (r) => {
+    setBusyId(r.id)
+    const ok = r.is_following ? await onUnfollow(r.id) : await onFollow(r.id)
+    if (ok) setResults(prev => prev.map(x => (x.id === r.id ? { ...x, is_following: !x.is_following } : x)))
+    setBusyId(null)
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: C.bg }}>
+      <SBar />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px 0', flexShrink: 0 }}>
+        <button onClick={onBack} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, color: C.amber, fontSize: 13, fontWeight: 700 }}>
+          <i className="ti ti-arrow-left" style={{ fontSize: 14 }} />Profile
+        </button>
+      </div>
+
+      <div style={{ padding: '8px 16px 0', flexShrink: 0 }}>
+        <div style={{ fontSize: 24, fontWeight: 800, color: C.text, letterSpacing: '-.5px', margin: '6px 0 12px' }}>Find collectors</div>
+        <div style={{ position: 'relative', marginBottom: 12 }}>
+          <i className="ti ti-search" style={{ position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)', fontSize: 15, color: C.muted }} />
+          <input value={q} onChange={e => onChange(e.target.value)} placeholder="Search by username" autoFocus
+            style={{ width: '100%', padding: '12px 12px 12px 40px', border: `1.5px solid ${q ? C.dark : C.border}`, borderRadius: 13, background: C.card, color: C.text, fontSize: 14, fontWeight: 500, outline: 'none' }} />
+          {searching && <div style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, borderRadius: '50%', border: `2px solid ${C.border}`, borderTop: `2px solid ${C.dark}`, animation: 'spin 1s linear infinite' }} />}
+        </div>
+        {err && <div style={{ fontSize: 12, color: C.red, marginBottom: 10 }}>{err}</div>}
+        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 24px' }}>
+        {results.map(r => (
+          <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '10px 0', borderBottom: `0.5px solid ${C.border}` }}>
+            <div style={{ width: 38, height: 38, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(r.username || '?').slice(0, 2).toUpperCase()}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.username}</div>
+              <div style={{ fontSize: 11, color: C.muted }}>{r.matchbooks} {r.matchbooks === 1 ? 'matchbook' : 'matchbooks'}</div>
+            </div>
+            <button onClick={() => toggle(r)} disabled={busyId === r.id}
+              style={{ flexShrink: 0, fontSize: 12, fontWeight: 700, padding: '7px 16px', borderRadius: 99, cursor: busyId === r.id ? 'default' : 'pointer', border: r.is_following ? `1px solid ${C.border}` : 'none', background: r.is_following ? 'transparent' : C.dark, color: r.is_following ? C.sec : '#fff', opacity: busyId === r.id ? 0.6 : 1 }}>
+              {r.is_following ? 'Following' : 'Follow'}
+            </button>
+          </div>
+        ))}
+        {q.trim().length >= 1 && !searching && results.length === 0 && !err && (
+          <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: C.muted, fontSize: 13 }}>No collectors match “{q.trim()}”.</div>
+        )}
+        {q.trim().length === 0 && (
+          <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: C.muted, fontSize: 13, lineHeight: 1.6 }}>Search a username to follow other collectors and compare lists.</div>
+        )}
       </div>
     </div>
   )
@@ -1766,6 +1932,9 @@ export default function App() {
   const [isAdmin, setIsAdmin] = useState(false)
   const [fakeReports, setFakeReports] = useState([]) // pending fake_reports (admin only)
   const [showAdmin, setShowAdmin] = useState(false)
+  const [showInvite, setShowInvite] = useState(false)
+  const [showFind, setShowFind] = useState(false)
+  const [following, setFollowing] = useState([]) // [{ id, username, matchbooks }]
   const [sheetOpen, setSheetOpen] = useState(false) // a bottom sheet is open → hide TabBar
 
   // Auth state
@@ -1783,6 +1952,34 @@ export default function App() {
 
     return () => subscription.unsubscribe()
   }, [])
+
+  // Capture an inbound invite link (?invite=<username>) once, stash it, and clean
+  // the URL so it isn't re-shared. Attribution happens after the user authenticates.
+  useEffect(() => {
+    try {
+      const ref = new URLSearchParams(window.location.search).get('invite')
+      if (ref) {
+        localStorage.setItem('phillumeni_ref', ref)
+        window.history.replaceState({}, '', window.location.pathname)
+      }
+    } catch { /* no URL/storage access — skip */ }
+  }, [])
+
+  // Once authenticated, attribute the referral exactly once (only while
+  // referred_by is null, never self-referral). Tolerates the column being
+  // unmigrated and clears the pending ref only on a clean write.
+  useEffect(() => {
+    if (!user) return
+    let ref = null
+    try { ref = localStorage.getItem('phillumeni_ref') } catch { /* no storage */ }
+    if (!ref) return
+    const clear = () => { try { localStorage.removeItem('phillumeni_ref') } catch {} }
+    if (ref === user.id) { clear(); return } // no self-referral
+    // Attribute once (only while null). Clear on success OR if the column isn't
+    // migrated (can't record it — stop retrying every login). Keep on transient.
+    supabase.from('profiles').update({ referred_by: ref }).eq('id', user.id).is('referred_by', null)
+      .then(({ error }) => { if (!error || isMissingColumn(error)) clear() })
+  }, [user])
 
   // Load venues (retryable; surfaces errors instead of silently showing "no spots")
   const loadVenues = useCallback(() => {
@@ -1843,6 +2040,31 @@ export default function App() {
   }, [user])
 
   useEffect(() => { if (isAdmin) loadFakeReports() }, [isAdmin, loadFakeReports])
+
+  // Follow graph — who I follow (via SECURITY DEFINER RPC; profiles are locked down)
+  const loadFollowing = useCallback(() => {
+    if (!user) return
+    supabase.rpc('following_list').then(({ data, error }) => {
+      if (!error) setFollowing(data || [])
+    })
+  }, [user])
+
+  useEffect(() => { if (user) loadFollowing() }, [user, loadFollowing])
+
+  const handleFollow = async (userId) => {
+    if (!user) return false
+    const { error } = await supabase.from('follows').insert({ follower_id: user.id, following_id: userId })
+    if (error && error.code !== '23505') { console.error('Follow failed', error); return false }
+    loadFollowing()
+    return true
+  }
+  const handleUnfollow = async (userId) => {
+    if (!user) return false
+    const { error } = await supabase.from('follows').delete().eq('follower_id', user.id).eq('following_id', userId)
+    if (error) { console.error('Unfollow failed', error); return false }
+    setFollowing(prev => prev.filter(f => f.id !== userId))
+    return true
+  }
 
   // Load collection with venue data joined
   const refreshCollection = useCallback(async () => {
@@ -1935,7 +2157,10 @@ export default function App() {
     setReported([])
     setIsAdmin(false)
     setFakeReports([])
+    setFollowing([])
     setShowAdmin(false)
+    setShowInvite(false)
+    setShowFind(false)
     setShowAuth(true)
   }
 
@@ -1996,6 +2221,10 @@ export default function App() {
           onReject={handleRejectReport}
           onBack={() => setShowAdmin(false)}
         />
+      ) : showInvite ? (
+        <InviteScreen user={user} onBack={() => setShowInvite(false)} />
+      ) : showFind ? (
+        <FindCollectors onFollow={handleFollow} onUnfollow={handleUnfollow} onBack={() => setShowFind(false)} />
       ) : (
         <>
           {tab === 'explore' && (
@@ -2031,11 +2260,15 @@ export default function App() {
               isAdmin={isAdmin}
               pendingReports={fakeReports.length}
               onOpenAdmin={() => setShowAdmin(true)}
+              onOpenInvite={() => setShowInvite(true)}
+              following={following}
+              onUnfollow={handleUnfollow}
+              onOpenFind={() => setShowFind(true)}
             />
           )}
         </>
       )}
-      {!showAdmin && !sheetOpen && <TabBar active={tab} onNav={setTab} />}
+      {!showAdmin && !showInvite && !showFind && !sheetOpen && <TabBar active={tab} onNav={setTab} />}
     </div>
   )
 }
