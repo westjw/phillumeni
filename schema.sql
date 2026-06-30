@@ -22,19 +22,39 @@ create policy "Users can update their own profile"
 create policy "Users can insert their own profile"
   on profiles for insert with check (auth.uid() = id);
 
--- Auto-create profile on signup
+-- Auto-create profile on signup.
+-- Must NEVER abort the auth.users insert: a username collision is resolved by
+-- suffixing rather than raising. search_path is pinned and names are qualified
+-- (Supabase linter: function_search_path_mutable).
 create or replace function handle_new_user()
-returns trigger as $$
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  base_username text;
+  final_username text;
+  n int := 0;
 begin
-  insert into profiles (id, username, display_name)
-  values (
-    new.id,
-    coalesce(new.raw_user_meta_data->>'username', split_part(new.email, '@', 1)),
-    coalesce(new.raw_user_meta_data->>'display_name', split_part(new.email, '@', 1))
-  );
+  base_username := coalesce(new.raw_user_meta_data->>'username', split_part(new.email, '@', 1));
+  final_username := base_username;
+  while exists (select 1 from public.profiles where username = final_username) loop
+    n := n + 1;
+    final_username := base_username || n::text;
+  end loop;
+  begin
+    insert into public.profiles (id, username, display_name)
+    values (new.id, final_username, coalesce(new.raw_user_meta_data->>'display_name', base_username));
+  exception when unique_violation then
+    -- last-resort uniqueness; never block account creation on a race
+    insert into public.profiles (id, username, display_name)
+    values (new.id, base_username || '_' || substr(new.id::text, 1, 8), base_username)
+    on conflict (id) do nothing;
+  end;
   return new;
 end;
-$$ language plpgsql security definer;
+$$;
 
 create trigger on_auth_user_created
   after insert on auth.users
@@ -66,8 +86,14 @@ alter table venues enable row level security;
 create policy "Venues are viewable by everyone"
   on venues for select using (true);
 
+-- Insert is constrained: created_by must be the caller (no impersonation) and
+-- verified cannot be self-set true (no forged trust badge).
 create policy "Authenticated users can insert venues"
-  on venues for insert with check (auth.role() = 'authenticated');
+  on venues for insert with check (auth.uid() = created_by and verified is not true);
+
+-- Creators may delete their own not-yet-verified venues (spam/typo cleanup).
+create policy "Users can delete their own unverified venues"
+  on venues for delete using (auth.uid() = created_by and verified is not true);
 
 -- ─── COLLECTIONS ────────────────────────────────────────
 create table collections (

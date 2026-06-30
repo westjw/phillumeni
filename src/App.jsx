@@ -500,12 +500,15 @@ function Submit({ onBack, onAdded, user }) {
 
       if (venueErr) throw venueErr
 
-      // Add to collection
-      await supabase
+      // Add to collection — capture the real row (serial id) and surface errors
+      const { data: collectionRow, error: collErr } = await supabase
         .from('collections')
         .insert({ user_id: user.id, venue_id: venue.id })
+        .select()
+        .single()
+      if (collErr) throw collErr
 
-      onAdded(venue)
+      onAdded(venue, collectionRow)
       setStep(3)
     } catch (e) {
       console.error(e)
@@ -696,23 +699,35 @@ function AuthScreen({ onDone }) {
   const [username, setUsername] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
 
   const handleSubmit = async () => {
     setLoading(true)
     setError('')
+    setNotice('')
     try {
       if (mode === 'signup') {
-        const { error } = await supabase.auth.signUp({
+        const { data, error } = await supabase.auth.signUp({
           email,
           password,
           options: { data: { username: username || email.split('@')[0] } },
         })
         if (error) throw error
+        // When email confirmation is required, signUp returns no session and the
+        // user is NOT logged in yet. Don't drop them into the app on a null session.
+        if (!data.session) {
+          setNotice('Account created. Check your email to confirm, then sign in.')
+          setMode('login')
+          setPassword('')
+          setLoading(false)
+          return
+        }
+        onDone()
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) throw error
+        onDone()
       }
-      onDone()
     } catch (e) {
       setError(e.message)
     }
@@ -752,6 +767,7 @@ function AuthScreen({ onDone }) {
         <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" type="email" style={inputStyle} />
         <input value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" type="password" style={inputStyle} />
 
+        {notice && <div style={{ color: '#6ACBAB', fontSize: 12, marginBottom: 12, lineHeight: 1.4 }}>{notice}</div>}
         {error && <div style={{ color: '#F08080', fontSize: 12, marginBottom: 12, lineHeight: 1.4 }}>{error}</div>}
 
         <button onClick={handleSubmit} disabled={loading || !email || !password}
@@ -767,7 +783,7 @@ function AuthScreen({ onDone }) {
 
         <div style={{ textAlign: 'center', fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>
           {mode === 'signup' ? 'Already have an account? ' : 'New here? '}
-          <span onClick={() => { setMode(mode === 'signup' ? 'login' : 'signup'); setError('') }} style={{ color: C.amber, cursor: 'pointer', fontWeight: 700 }}>
+          <span onClick={() => { setMode(mode === 'signup' ? 'login' : 'signup'); setError(''); setNotice('') }} style={{ color: C.amber, cursor: 'pointer', fontWeight: 700 }}>
             {mode === 'signup' ? 'Sign in' : 'Create account'}
           </span>
         </div>
@@ -844,6 +860,18 @@ export default function App() {
       })
   }, [user])
 
+  // Load this user's reports so flagged venues stay hidden across reloads
+  useEffect(() => {
+    if (!user) { setReported([]); return }
+    supabase
+      .from('reports')
+      .select('venue_id')
+      .eq('user_id', user.id)
+      .then(({ data }) => {
+        if (data) setReported(data)
+      })
+  }, [user])
+
   // Load collection with venue data joined
   const refreshCollection = useCallback(async () => {
     if (!user) return
@@ -857,11 +885,15 @@ export default function App() {
 
   const handleCollect = async (venue) => {
     if (!user) return
-    const { error } = await supabase
+    // Insert and read back the real row so local state carries the DB serial id
+    // (otherwise a same-session Remove deletes by a Date.now() id and silently no-ops).
+    const { data, error } = await supabase
       .from('collections')
       .insert({ user_id: user.id, venue_id: venue.id })
-    if (!error) {
-      setCollection(prev => [{ id: Date.now(), user_id: user.id, venue_id: venue.id, collected_at: new Date().toISOString() }, ...prev])
+      .select()
+      .single()
+    if (!error && data) {
+      setCollection(prev => [data, ...prev])
     }
   }
 
@@ -872,13 +904,18 @@ export default function App() {
 
   const handleFlag = async (venueId) => {
     if (!user) return
-    await supabase.from('reports').insert({ user_id: user.id, venue_id: venueId })
-    setReported(prev => [...prev, { venue_id: venueId }])
+    // upsert + ignoreDuplicates so a re-flag after reload doesn't hit the unique constraint
+    const { error } = await supabase
+      .from('reports')
+      .upsert({ user_id: user.id, venue_id: venueId }, { onConflict: 'user_id,venue_id', ignoreDuplicates: true })
+    if (!error) {
+      setReported(prev => (prev.some(r => r.venue_id === venueId) ? prev : [...prev, { venue_id: venueId }]))
+    }
   }
 
-  const handleAdded = (newVenue) => {
+  const handleAdded = (newVenue, collectionRow) => {
     setVenues(prev => [...prev, newVenue])
-    setCollection(prev => [{ id: Date.now(), user_id: user.id, venue_id: newVenue.id, collected_at: new Date().toISOString() }, ...prev])
+    if (collectionRow) setCollection(prev => [collectionRow, ...prev])
   }
 
   const handleSignOut = async () => {
