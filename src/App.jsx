@@ -25,6 +25,28 @@ const titleCase = (s) => (s ? String(s).replace(/\b\w/g, (c) => c.toUpperCase())
 // the column being absent, so the app degrades gracefully on a partial migration.
 const isMissingColumn = (err) =>
   !!err && (err.code === '42703' || err.code === 'PGRST204' || /schema cache/i.test(err.message || ''))
+
+// Downscale a photo before upload — phone photos are 3–12MB, which makes uploads
+// crawl on cellular. Resize to fit maxDim, re-encode as JPEG, honor EXIF
+// orientation. Returns the original file if anything fails or it's already smaller.
+async function downscaleImage(file, maxDim = 1600, quality = 0.82) {
+  if (!file?.type?.startsWith('image/')) return file
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
+    const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height))
+    const width = Math.round(bitmap.width * scale)
+    const height = Math.round(bitmap.height * scale)
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, width, height)
+    bitmap.close?.()
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', quality))
+    return blob && blob.size < file.size ? blob : file
+  } catch {
+    return file
+  }
+}
 const venueInitials = (name) => (name || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('')
 
 function eloUpdate(scoreA, scoreB, aWon) {
@@ -265,6 +287,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
   const [filter, setFilter] = useState('all')
   const [reporting, setReporting] = useState(null) // venue being reported
   const [venuePhotos, setVenuePhotos] = useState([]) // anonymized gallery for the open venue
+  const [collectErr, setCollectErr] = useState('')
   const reportedIds = useMemo(() => reported.map(r => r.venue_id), [reported])
 
   // Tell the shell a sheet is open so it can hide the tab bar (sheet covers it).
@@ -276,6 +299,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
   // Load the venue's community photo gallery (anonymized RPC; no-ops gracefully
   // if migration 009 hasn't run yet).
   useEffect(() => {
+    setCollectErr('')
     if (!selected) { setVenuePhotos([]); return }
     let cancelled = false
     supabase.rpc('venue_photos', { p_venue_id: selected.id }).then(({ data, error }) => {
@@ -377,7 +401,8 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
               </>
             ) : (
               <>
-                <PrimaryBtn onClick={() => { onCollect(selected); setSelected(null) }} style={{ marginBottom: 8 }}>Got it — add to collection</PrimaryBtn>
+                <PrimaryBtn onClick={async () => { const ok = await onCollect(selected); if (ok) setSelected(null); else setCollectErr('Couldn’t add it — check your connection and try again.') }} style={{ marginBottom: 8 }}>Got it — add to collection</PrimaryBtn>
+                {collectErr && <div style={{ fontSize: 12, color: C.red, margin: '0 0 8px', lineHeight: 1.4 }}>{collectErr}</div>}
                 <OutlineBtn onClick={() => setReporting(selected)} color={C.red}>
                   <i className="ti ti-flag" style={{ fontSize: 12, marginRight: 5 }} />Report a problem
                 </OutlineBtn>
@@ -512,7 +537,7 @@ function Collection({ items, venues, onRemove }) {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginBottom: 12 }}>
-            {[{ n: collected.length, l: 'matchbooks' }, { n: new Set(collected.map(i => i.venue.city)).size, l: 'cities' }, { n: hoods.length, l: 'hoods' }, { n: collected.filter(i => (i.venue.sources || []).length >= 2).length, l: 'verified' }].map((s, i) => (
+            {[{ n: collected.length, l: 'matchbooks' }, { n: new Set(collected.map(i => i.venue.city)).size, l: 'cities' }, { n: hoods.length, l: 'hoods' }, { n: collected.filter(i => i.score != null).length, l: 'ranked' }].map((s, i) => (
               <div key={i} style={{ background: C.surface, borderRadius: 12, padding: '9px 10px', textAlign: 'center' }}>
                 <div style={{ fontSize: 20, fontWeight: 700, color: C.text }}>{s.n}</div>
                 <div style={{ fontSize: 9, color: C.muted, marginTop: 1, textTransform: 'uppercase', letterSpacing: .4, fontWeight: 600 }}>{s.l}</div>
@@ -620,11 +645,13 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
       const id = crypto.randomUUID()
       setPhotos(prev => [...prev, { id, preview: URL.createObjectURL(file), url: null, path: null, status: 'uploading' }])
       try {
-        const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
+        const upload = await downscaleImage(file)
+        const resized = upload !== file // downscale re-encoded it to JPEG
+        const ext = resized ? 'jpg' : ((file.name.split('.').pop() || 'jpg').toLowerCase())
         const path = `${user.id}/${crypto.randomUUID()}.${ext}`
         const { error: upErr } = await supabase.storage
           .from('matchbooks')
-          .upload(path, file, { contentType: file.type || 'image/jpeg', upsert: false })
+          .upload(path, upload, { contentType: resized ? 'image/jpeg' : (file.type || 'image/jpeg'), upsert: false })
         if (upErr) throw upErr
         const { data } = supabase.storage.from('matchbooks').getPublicUrl(path)
         setPhotos(prev => prev.map(p => (p.id === id ? { ...p, url: data.publicUrl, path, status: 'done' } : p)))
@@ -821,10 +848,11 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
               ? existingC.photos
               : ((existingC && existingC.photo_url) ? [existingC.photo_url] : [])
             const merged = [...existingPhotos, ...photoUrls]
-            const { data: updated } = await supabase
+            const { data: updated, error: updErr } = await supabase
               .from('collections')
               .update({ photos: merged, photo_url: merged[0] })
               .eq('user_id', user.id).eq('venue_id', venue.id).select().single()
+            if (updErr) throw updErr // surface via the catch, don't fake success
             savedRow = updated || null
           } else {
             // photos column not migrated — keep any existing cover, only set if missing
@@ -961,6 +989,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
     return (
       <ComparisonFlow
         newVenue={addedVenue}
+        newPhoto={photoUrls[0] || null}
         rankedItems={rankedItems}
         user={user}
         onDone={() => (onRankingDone || onBack)()}
@@ -1231,7 +1260,7 @@ function ReportSheet({ venue, onClose, onNotAvailable, onFake }) {
 // Invariant: the new venue ALWAYS leaves this screen with a non-null score —
 // completing writes the Elo result; skipping/abandoning persists the fair
 // baseline (the opponent's score) so a ranked submission can never go missing.
-function ComparisonFlow({ newVenue, rankedItems, user, onDone }) {
+function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone }) {
   // Opponents = the user's existing ranked list, defensively excluding the new
   // venue itself (it must never compare against itself).
   const opponents = useMemo(
@@ -1332,6 +1361,11 @@ function ComparisonFlow({ newVenue, rankedItems, user, onDone }) {
 
   const newIni = venueInitials(newVenue.name)
   const oppIni = venueInitials(opponent.venue?.name || '')
+  const oppPhoto = opponent.photo_url || (opponent.photos && opponent.photos[0]) || null
+  // Show the actual matchbook photo when there is one, else the initials disc.
+  const avatar = (photo, bg, ini) => photo
+    ? <img src={photo} alt="" style={{ width: 72, height: 72, borderRadius: '50%', objectFit: 'cover', marginBottom: 12 }} />
+    : <div style={{ width: 72, height: 72, borderRadius: '50%', background: bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, fontWeight: 700, color: '#fff', marginBottom: 12 }}>{ini}</div>
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: C.bg }}>
@@ -1349,7 +1383,7 @@ function ComparisonFlow({ newVenue, rankedItems, user, onDone }) {
         <div onClick={() => pick(true)}
           style={{ width: '100%', background: C.amberBg, border: `2px solid ${C.amberBd}`, borderRadius: 20, padding: '28px 16px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.7 : 1, marginBottom: 14, position: 'relative' }}>
           <div style={{ position: 'absolute', top: -13, left: '50%', transform: 'translateX(-50%)', background: C.amberBg, border: `1.5px solid ${C.amberBd}`, borderRadius: 99, padding: '3px 16px', fontSize: 11, fontWeight: 800, color: C.amber, letterSpacing: '.8px', whiteSpace: 'nowrap' }}>NEW</div>
-          <div style={{ width: 72, height: 72, borderRadius: '50%', background: '#1A1918', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, fontWeight: 700, color: '#fff', marginBottom: 12 }}>{newIni}</div>
+          {avatar(newPhoto, '#1A1918', newIni)}
           <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 4, textAlign: 'center' }}>{newVenue.name}</div>
           <div style={{ fontSize: 13, color: C.sec }}>{newVenue.neighborhood || newVenue.city || 'NYC'}</div>
         </div>
@@ -1359,7 +1393,7 @@ function ComparisonFlow({ newVenue, rankedItems, user, onDone }) {
         <div onClick={() => pick(false)}
           style={{ width: '100%', background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 20, padding: '28px 16px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.7 : 1, marginBottom: 16, position: 'relative' }}>
           <div style={{ position: 'absolute', top: -13, left: '50%', transform: 'translateX(-50%)', background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 99, padding: '3px 16px', fontSize: 11, fontWeight: 800, color: C.muted, letterSpacing: '.8px', whiteSpace: 'nowrap' }}>CURRENTLY #{oppRank}</div>
-          <div style={{ width: 72, height: 72, borderRadius: '50%', background: opponent.venue?.bg_color || '#3D2B1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, fontWeight: 700, color: '#fff', marginBottom: 12 }}>{oppIni}</div>
+          {avatar(oppPhoto, opponent.venue?.bg_color || '#3D2B1A', oppIni)}
           <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 4, textAlign: 'center' }}>{opponent.venue?.name || ''}</div>
           <div style={{ fontSize: 13, color: C.sec }}>{opponent.venue?.neighborhood || opponent.venue?.city || ''}</div>
         </div>
@@ -1578,7 +1612,7 @@ function ProfileScreen({ user, collection, nycTotal, onSignOut, isAdmin, pending
           )}
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 14 }}>
-            {[{ n: collection.length, l: 'matchbooks' }, { n: new Set(collection.map(i => i.venue?.city)).size, l: 'cities' }, { n: collection.filter(i => (i.venue?.sources || []).length >= 2).length, l: 'verified' }].map((s, i) => (
+            {[{ n: collection.length, l: 'matchbooks' }, { n: new Set(collection.map(i => i.venue?.city)).size, l: 'cities' }, { n: collection.filter(i => i.score != null).length, l: 'ranked' }].map((s, i) => (
               <div key={i} style={{ background: C.surface, borderRadius: 12, padding: '10px 12px', textAlign: 'center' }}>
                 <div style={{ fontSize: 20, fontWeight: 700, color: C.text }}>{s.n}</div>
                 <div style={{ fontSize: 9, color: C.muted, textTransform: 'uppercase', letterSpacing: .4, fontWeight: 600, marginTop: 1 }}>{s.l}</div>
@@ -1786,6 +1820,7 @@ function AdminQueue({ reports, venues, onAccept, onReject, onBack }) {
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
   const [names, setNames] = useState({}) // user id → username (best-effort, admin read)
   const [busyId, setBusyId] = useState(null)
+  const [actionErr, setActionErr] = useState('')
 
   // Venue comes from the embedded FK join (r.venue); fall back to the client
   // array. Never drop a report — keep the queue count in sync with the badge.
@@ -1803,8 +1838,8 @@ function AdminQueue({ reports, venues, onAccept, onReject, onBack }) {
 
   const uname = (id) => (id && names[id]) ? '@' + names[id] : 'a collector'
 
-  const accept = async (r) => { setBusyId(r.id); await onAccept(r.venue_id, r.id); setBusyId(null) }
-  const reject = async (r) => { setBusyId(r.id); await onReject(r.id); setBusyId(null) }
+  const accept = async (r) => { setBusyId(r.id); setActionErr(''); const ok = await onAccept(r.venue_id, r.id); setBusyId(null); if (ok === false) setActionErr('Couldn’t remove that venue — try again.') }
+  const reject = async (r) => { setBusyId(r.id); setActionErr(''); const ok = await onReject(r.id); setBusyId(null); if (ok === false) setActionErr('Couldn’t reject that report — try again.') }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: C.bg }}>
@@ -1817,7 +1852,8 @@ function AdminQueue({ reports, venues, onAccept, onReject, onBack }) {
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '8px 16px 24px' }}>
         <div style={{ fontSize: 28, fontWeight: 800, color: C.text, letterSpacing: '-.6px', marginTop: 6 }}>Reported photos</div>
-        <div style={{ fontSize: 13, color: C.muted, marginBottom: 18 }}>{enriched.length} pending</div>
+        <div style={{ fontSize: 13, color: C.muted, marginBottom: actionErr ? 8 : 18 }}>{enriched.length} pending</div>
+        {actionErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 14, lineHeight: 1.4 }}>{actionErr}</div>}
 
         {enriched.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
@@ -2037,6 +2073,10 @@ function ResetPassword({ onDone }) {
           style={{ width: '100%', padding: 15, background: loading ? 'rgba(200,123,10,0.5)' : '#C87B0A', color: '#fff', border: 'none', borderRadius: 13, fontSize: 15, fontWeight: 700, cursor: loading ? 'default' : 'pointer', letterSpacing: '-.2px', marginTop: 4, boxShadow: '0 2px 12px rgba(200,123,10,0.35)' }}>
           {loading ? 'Saving…' : 'Save password & sign in'}
         </button>
+
+        <div style={{ textAlign: 'center', fontSize: 13, color: 'rgba(255,255,255,0.35)', marginTop: 16 }}>
+          <span onClick={async () => { await supabase.auth.signOut(); onDone() }} style={{ color: C.amber, cursor: 'pointer', fontWeight: 700 }}>Cancel</span>
+        </div>
       </div>
     </div>
   )
@@ -2093,7 +2133,10 @@ export default function App() {
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      setUser(session?.user || null)
+      // Only swap the user object when the identity actually changes, so token
+      // refreshes / focus events don't re-fire every [user]-keyed load + clobber
+      // optimistic local state.
+      setUser(prev => (prev?.id === session?.user?.id ? prev : (session?.user || null)))
       if (!session?.user) setShowAuth(true)
       // Opened a reset link → show the "set new password" screen before the app.
       if (event === 'PASSWORD_RECOVERY') { setRecoveryMode(true); setShowAuth(false) }
@@ -2227,17 +2270,27 @@ export default function App() {
   }, [user])
 
   const handleCollect = async (venue) => {
-    if (!user) return
-    // Insert and read back the real row so local state carries the DB serial id
-    // (otherwise a same-session Remove deletes by a Date.now() id and silently no-ops).
-    const { data, error } = await supabase
-      .from('collections')
-      .insert({ user_id: user.id, venue_id: venue.id })
-      .select()
-      .single()
-    if (!error && data) {
-      setCollection(prev => [data, ...prev])
+    if (!user) return false
+    // Seed a score so a venue collected from the map actually appears in Rankings
+    // (first ranked → 7.5, otherwise the median of your list). Without this,
+    // "Got it" venues were stranded with score=null and never rankable.
+    const median = rankedItems.length ? rankedItems[Math.floor((rankedItems.length - 1) / 2)]?.score : null
+    const score = Math.round((rankedItems.length === 0 ? 7.5 : (median ?? 7.5)) * 10) / 10
+    const row = { user_id: user.id, venue_id: venue.id, score }
+    let data = null, error = null
+    for (let attempt = 0; attempt < 2; attempt++) {
+      ;({ data, error } = await supabase.from('collections').insert(row).select().single())
+      if (!error) break
+      if (isMissingColumn(error) && 'score' in row) { delete row.score; continue } // pre-007 DB
+      break
     }
+    if (error) {
+      if (error.code === '23505') return true // already collected — treat as success
+      console.error('Collect failed', error)
+      return false
+    }
+    setCollection(prev => (prev.some(c => c.id === data.id) ? prev : [data, ...prev]))
+    return true
   }
 
   const handleRemoveFromCollection = async (collectionId) => {
@@ -2272,11 +2325,12 @@ export default function App() {
   // score, report, and the fake_reports rows pointing at it (spec §4).
   const handleAcceptReport = async (venueId, reportId) => {
     const { error } = await supabase.from('venues').delete().eq('id', venueId)
-    if (error) { console.error('Accept (delete venue) failed', error); return }
+    if (error) { console.error('Accept (delete venue) failed', error); return false }
     setVenues(prev => prev.filter(v => v.id !== venueId))
     setCollection(prev => prev.filter(c => c.venue_id !== venueId))
     setReported(prev => prev.filter(r => r.venue_id !== venueId))
     setFakeReports(prev => prev.filter(r => r.venue_id !== venueId))
+    return true
   }
 
   // Admin: Reject — keep the venue, mark the report resolved (spec §4).
@@ -2285,8 +2339,9 @@ export default function App() {
       .from('fake_reports')
       .update({ status: 'rejected', resolved_by: user.id, resolved_at: new Date().toISOString() })
       .eq('id', reportId)
-    if (error) { console.error('Reject report failed', error); return }
+    if (error) { console.error('Reject report failed', error); return false }
     setFakeReports(prev => prev.filter(r => r.id !== reportId))
+    return true
   }
 
   const handleAdded = (newVenue, collectionRow) => {
@@ -2322,6 +2377,17 @@ export default function App() {
     () => enrichedCollection.filter(i => i.score != null && i.venue).sort((a, b) => b.score - a.score),
     [enrichedCollection]
   )
+
+  // Tapping a bottom tab from anywhere (Submit, Admin, Invite, Find) exits that
+  // flow and lands on the tab — so you're never stuck in a screen.
+  const handleNav = (t) => {
+    setShowSubmit(false)
+    setShowAdmin(false)
+    setShowInvite(false)
+    setShowFind(false)
+    setSheetOpen(false)
+    setTab(t)
+  }
 
   const phoneStyle = {
     maxWidth: 390,
@@ -2425,7 +2491,7 @@ export default function App() {
           )}
         </>
       )}
-      {!showAdmin && !showInvite && !showFind && !sheetOpen && <TabBar active={tab} onNav={setTab} />}
+      {!sheetOpen && <TabBar active={tab} onNav={handleNav} />}
     </div>
   )
 }

@@ -24,6 +24,13 @@ create policy "Users can view their own profile"
 create policy "Users can update their own profile"
   on profiles for update using (auth.uid() = id);
 
+-- SECURITY: the policy restricts the ROW (your own); this column-scoped grant
+-- restricts the COLUMNS. is_admin + id are deliberately excluded so a user can
+-- never self-promote to admin from the client.
+revoke update on profiles from authenticated;
+grant update (username, display_name, bio, home_city, referred_by)
+  on profiles to authenticated;
+
 create policy "Users can insert their own profile"
   on profiles for insert with check (auth.uid() = id);
 

@@ -1,5 +1,5 @@
 -- ════════════════════════════════════════════════════════════════
--- RUN ALL PENDING MIGRATIONS (006 → 013) + make yourself admin.
+-- RUN ALL PENDING MIGRATIONS (006 → 014) + make yourself admin.
 -- Paste this ENTIRE file into the Supabase SQL editor and click Run.
 -- Safe to run once on a DB currently at migration 005. Idempotent.
 -- NOTE: 007 wipes the 8 leftover seed venues (zero-seed by design).
@@ -325,6 +325,26 @@ revoke execute on function public.my_referral_count() from anon;
 revoke execute on function public.following_list() from anon;
 revoke execute on function public.search_collectors(text) from anon;
 revoke execute on function public.friends_rankings() from anon;
+
+-- ─────────────────────────────────────────────────────────────
+-- 014_lock_profile_columns.sql
+-- ─────────────────────────────────────────────────────────────
+-- Migration 014 — SECURITY: stop users writing privileged profile columns.
+-- Run ONCE in the Supabase SQL editor (do this ASAP — it's a real escalation).
+--
+-- The "Users can update their own profile" RLS policy gates WHICH ROW you can
+-- edit (your own) but not WHICH COLUMNS. profiles.is_admin is a real auth
+-- boundary (RLS admin checks trust it), so any logged-in user could run
+-- `update profiles set is_admin = true where id = auth.uid()` and take over
+-- moderation (incl. deleting any venue, which cascades away everyone's data).
+--
+-- Fix: column-scoped UPDATE grant. RLS still restricts to the owner's row; the
+-- grant restricts which columns that owner may change — is_admin and id are
+-- excluded, so they can never be set from the client (only via SQL/service role).
+
+revoke update on public.profiles from authenticated;
+grant update (username, display_name, bio, home_city, referred_by)
+  on public.profiles to authenticated;
 
 -- ─────────────────────────────────────────────────────────────
 -- Make yourself admin (your app-login email)
