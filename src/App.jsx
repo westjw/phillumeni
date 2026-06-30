@@ -8,6 +8,9 @@ import { supabase } from './supabase.js'
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
 const NYC = { lng: -74.006, lat: 40.7128 }
 
+// Title-case a Mapbox poi_category (e.g. "fast food restaurant" -> "Fast Food Restaurant")
+const titleCase = (s) => (s ? String(s).replace(/\b\w/g, (c) => c.toUpperCase()) : s)
+
 // ─── COLORS ─────────────────────────────────────────────
 const C = {
   bg:'#FAFAF8', card:'#FFFFFF', surface:'#F4F1EC',
@@ -126,6 +129,11 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
     map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right')
     map.addControl(geolocate, 'top-right')
 
+    // Don't let a denied/timed-out location prompt fail silently; map stays on NYC.
+    geolocate.on('error', (err) => {
+      console.warn('Geolocation unavailable; staying centered on NYC.', err?.message || err)
+    })
+
     map.on('load', () => {
       geolocate.trigger()
     })
@@ -194,7 +202,7 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
 }
 
 // ─── EXPLORE SCREEN ──────────────────────────────────────
-function Explore({ venues, collectionIds, reported, onCollect, onFlag, onSubmit }) {
+function Explore({ venues, collectionIds, reported, onCollect, onFlag, onSubmit, venuesError, onRetry }) {
   const [selected, setSelected] = useState(null)
   const [filter, setFilter] = useState('all')
   const reportedIds = reported.map(r => r.venue_id)
@@ -300,9 +308,16 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onSubmit 
               </div>
             ))}
             {listed.length === 0 && (
-              <div style={{ textAlign: 'center', padding: '2rem', color: C.muted, fontSize: 13 }}>
-                No spots to find — you may have collected them all! 🔥
-              </div>
+              venuesError ? (
+                <div style={{ textAlign: 'center', padding: '2rem', color: C.muted, fontSize: 13 }}>
+                  Couldn’t load spots.{' '}
+                  <span onClick={onRetry} style={{ color: C.amber, fontWeight: 700, cursor: 'pointer' }}>Retry</span>
+                </div>
+              ) : (
+                <div style={{ textAlign: 'center', padding: '2rem', color: C.muted, fontSize: 13 }}>
+                  No spots to find — you may have collected them all! 🔥
+                </div>
+              )
             )}
           </div>
         )}
@@ -444,8 +459,13 @@ function Submit({ onBack, onAdded, user }) {
   const [searching, setSearching] = useState(false)
   const [picked, setPicked] = useState(null)
   const [adding, setAdding] = useState(false)
+  const [searchErr, setSearchErr] = useState('')
+  const [addErr, setAddErr] = useState('')
   const searchTimer = useRef(null)
   const fileInputRef = useRef(null)
+  const searchSeq = useRef(0)        // guards against out-of-order search responses
+  const sessionRef = useRef('')      // Search Box billing session (suggest + retrieve)
+  const getSession = () => (sessionRef.current ||= crypto.randomUUID())
 
   const handlePhotoSelect = async (e) => {
     const file = e.target.files?.[0]
@@ -474,28 +494,36 @@ function Submit({ onBack, onAdded, user }) {
   const clearPhoto = () => { setPhotoPreview(null); setPhotoUrl(null); setUploadErr(''); setUploading(false) }
 
   const searchVenues = async (q) => {
-    if (q.length < 2) { setResults([]); return }
+    const query = q.trim()
+    if (query.length < 2) { setResults([]); setSearchErr(''); setSearching(false); return }
+    const seq = ++searchSeq.current
     setSearching(true)
+    setSearchErr('')
     try {
-      // Use Mapbox Geocoding to search for venues
+      // Mapbox Search Box API — the v5 geocoder's POI search is deprecated
       const res = await fetch(
-        `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(q)}.json?` +
-        `types=poi&proximity=${NYC.lng},${NYC.lat}&limit=5&access_token=${MAPBOX_TOKEN}`
+        `https://api.mapbox.com/search/searchbox/v1/suggest?q=${encodeURIComponent(query)}` +
+        `&proximity=${NYC.lng},${NYC.lat}&types=poi&limit=6` +
+        `&session_token=${getSession()}&access_token=${MAPBOX_TOKEN}`
       )
+      if (!res.ok) throw new Error(`Search unavailable (${res.status})`)
       const data = await res.json()
-      const places = (data.features || []).map(f => ({
-        id: f.id,
-        name: f.text,
-        address: f.place_name,
-        lat: f.center[1],
-        lng: f.center[0],
-        type: f.properties?.category || 'Restaurant',
+      if (seq !== searchSeq.current) return // a newer keystroke superseded this response
+      const places = (data.suggestions || []).map(s => ({
+        id: s.mapbox_id,
+        mapbox_id: s.mapbox_id,
+        name: s.name,
+        address: s.full_address || s.place_formatted || s.name,
+        type: titleCase(s.poi_category?.[0]) || 'Restaurant',
       }))
       setResults(places)
     } catch (e) {
+      if (seq !== searchSeq.current) return
       setResults([])
+      setSearchErr('Couldn’t reach search. Check your connection and try again.')
+    } finally {
+      if (seq === searchSeq.current) setSearching(false)
     }
-    setSearching(false)
   }
 
   const handleQueryChange = (q) => {
@@ -508,7 +536,19 @@ function Submit({ onBack, onAdded, user }) {
   const handleAdd = async () => {
     if (!picked || !user) return
     setAdding(true)
+    setAddErr('')
     try {
+      // Search Box suggestions carry no coordinates — retrieve them before saving
+      const res = await fetch(
+        `https://api.mapbox.com/search/searchbox/v1/retrieve/${picked.mapbox_id}` +
+        `?session_token=${getSession()}&access_token=${MAPBOX_TOKEN}`
+      )
+      if (!res.ok) throw new Error('Could not load that place — pick another.')
+      const retrieved = await res.json()
+      const coords = retrieved.features?.[0]?.geometry?.coordinates
+      if (!coords || coords.length < 2) throw new Error('No location found for that place.')
+      const [lng, lat] = coords
+
       // Insert venue into Supabase
       const { data: venue, error: venueErr } = await supabase
         .from('venues')
@@ -517,8 +557,8 @@ function Submit({ onBack, onAdded, user }) {
           address: picked.address.split(',').slice(0, 2).join(','),
           neighborhood: picked.address.split(',')[1]?.trim() || 'NYC',
           city: 'NYC',
-          lat: picked.lat,
-          lng: picked.lng,
+          lat,
+          lng,
           type: picked.type,
           emoji: '🔥',
           bg_color: '#281808',
@@ -540,10 +580,11 @@ function Submit({ onBack, onAdded, user }) {
       if (collErr) throw collErr
 
       onAdded(venue, collectionRow)
+      sessionRef.current = '' // start a fresh billing session for the next submit
       setStep(3)
     } catch (e) {
       console.error(e)
-      alert('Something went wrong. Try again.')
+      setAddErr(e.message || 'Something went wrong. Try again.')
     }
     setAdding(false)
   }
@@ -640,10 +681,14 @@ function Submit({ onBack, onAdded, user }) {
               {searching && <div style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, borderRadius: '50%', border: `2px solid ${C.border}`, borderTop: `2px solid ${C.dark}`, animation: 'spin 1s linear infinite' }} />}
             </div>
 
+            {searchErr && (
+              <div style={{ fontSize: 12, color: C.red, marginBottom: 12, lineHeight: 1.4 }}>{searchErr}</div>
+            )}
+
             {results.length > 0 && (
               <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
                 {results.map((r, i) => (
-                  <div key={r.id} onClick={() => { setPicked(r); setQuery(r.name) }}
+                  <div key={r.id} onClick={() => { setPicked(r); setQuery(r.name); setAddErr('') }}
                     style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '12px 14px', borderBottom: i < results.length - 1 ? `0.5px solid ${C.border}` : 'none', cursor: 'pointer', background: picked?.id === r.id ? C.greenBg : 'transparent', transition: 'background .1s' }}>
                     <div style={{ width: 38, height: 38, borderRadius: 10, background: C.surface, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                       <i className="ti ti-map-pin" style={{ fontSize: 17, color: picked?.id === r.id ? C.green : C.muted }} />
@@ -658,6 +703,9 @@ function Submit({ onBack, onAdded, user }) {
               </Card>
             )}
 
+            {addErr && (
+              <div style={{ fontSize: 12, color: C.red, marginBottom: 10, lineHeight: 1.4 }}>{addErr}</div>
+            )}
             <PrimaryBtn onClick={handleAdd} disabled={!picked || adding}>
               {adding ? 'Adding to map…' : picked ? `Add ${picked.name}` : 'Select a venue first'}
             </PrimaryBtn>
@@ -672,7 +720,7 @@ function Submit({ onBack, onAdded, user }) {
               <span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is live and in your collection. Everyone nearby can find it.
             </div>
             <PrimaryBtn onClick={onBack} style={{ marginBottom: 10 }}>Back to map</PrimaryBtn>
-            <OutlineBtn onClick={() => { setStep(1); clearPhoto(); setQuery(''); setResults([]); setPicked(null) }}>Submit another</OutlineBtn>
+            <OutlineBtn onClick={() => { setStep(1); clearPhoto(); setQuery(''); setResults([]); setPicked(null); setSearchErr(''); setAddErr('') }}>Submit another</OutlineBtn>
           </div>
         )}
       </div>
@@ -872,6 +920,7 @@ export default function App() {
   const [reported, setReported] = useState([]) // { id, venue_id }
   const [showSubmit, setShowSubmit] = useState(false)
   const [showAuth, setShowAuth] = useState(false)
+  const [venuesError, setVenuesError] = useState(false)
 
   // Auth state
   useEffect(() => {
@@ -889,12 +938,16 @@ export default function App() {
     return () => subscription.unsubscribe()
   }, [])
 
-  // Load venues
-  useEffect(() => {
-    supabase.from('venues').select('*').order('name').then(({ data }) => {
-      if (data) setVenues(data)
+  // Load venues (retryable; surfaces errors instead of silently showing "no spots")
+  const loadVenues = useCallback(() => {
+    setVenuesError(false)
+    supabase.from('venues').select('*').order('name').then(({ data, error }) => {
+      if (error) { console.error('Failed to load venues', error); setVenuesError(true); return }
+      setVenues(data || [])
     })
   }, [])
+
+  useEffect(() => { loadVenues() }, [loadVenues])
 
   // Load collection
   useEffect(() => {
@@ -904,8 +957,9 @@ export default function App() {
       .select('*')
       .eq('user_id', user.id)
       .order('collected_at', { ascending: false })
-      .then(({ data }) => {
-        if (data) setCollection(data)
+      .then(({ data, error }) => {
+        if (error) { console.error('Failed to load collection', error); return }
+        setCollection(data || [])
       })
   }, [user])
 
@@ -916,8 +970,9 @@ export default function App() {
       .from('reports')
       .select('venue_id')
       .eq('user_id', user.id)
-      .then(({ data }) => {
-        if (data) setReported(data)
+      .then(({ data, error }) => {
+        if (error) { console.error('Failed to load reports', error); return }
+        setReported(data || [])
       })
   }, [user])
 
@@ -1021,6 +1076,8 @@ export default function App() {
               onCollect={handleCollect}
               onFlag={handleFlag}
               onSubmit={() => setShowSubmit(true)}
+              venuesError={venuesError}
+              onRetry={loadVenues}
             />
           )}
           {tab === 'collection' && (
