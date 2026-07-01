@@ -1312,9 +1312,10 @@ function ReportSheet({ venue, onClose, onNotAvailable, onFake }) {
 // Invariant: the new venue ALWAYS leaves this screen with a non-null score —
 // completing writes the Elo result; skipping/abandoning persists the fair
 // baseline (the opponent's score) so a ranked submission can never go missing.
-function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone }) {
+function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone, initialScore = null, reRank = false }) {
   // Opponents = the user's existing ranked list, defensively excluding the new
-  // venue itself (it must never compare against itself).
+  // venue itself (it must never compare against itself — which is exactly what
+  // makes this reusable for a re-rank: the spot is pulled out of its own list).
   const opponents = useMemo(
     () => rankedItems.filter(i => i.venue_id !== newVenue.id),
     [rankedItems, newVenue.id]
@@ -1323,7 +1324,10 @@ function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone }) {
   const [lo, setLo] = useState(0)
   const [hi, setHi] = useState(opponents.length - 1)
   const [doneCount, setDoneCount] = useState(0)
-  const [newScore, setNewScore] = useState(null)
+  // Re-rank seeds the current score so each head-to-head nudges from where the
+  // spot already sits (and a no-op / immediate skip keeps its existing score
+  // rather than resetting to a baseline). A fresh add starts at null.
+  const [newScore, setNewScore] = useState(initialScore)
   const [liveScores, setLiveScores] = useState({})
   const [saving, setSaving] = useState(false)
   const [writeErr, setWriteErr] = useState('')
@@ -1424,7 +1428,7 @@ function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone }) {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: C.bg }}>
       <SBar />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '20px 20px 16px', overflowY: 'auto' }}>
-        <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.5px', marginBottom: 4, textAlign: 'center' }}>Where does this rank?</div>
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.5px', marginBottom: 4, textAlign: 'center' }}>{reRank ? 'Re-rank this spot' : 'Where does this rank?'}</div>
         <div style={{ fontSize: 14, color: C.muted, marginBottom: 18, textAlign: 'center' }}>Tap the one you liked more</div>
 
         <div style={{ display: 'flex', gap: 6, marginBottom: 24 }}>
@@ -1435,7 +1439,7 @@ function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone }) {
 
         <div onClick={() => pick(true)}
           style={{ width: '100%', background: C.amberBg, border: `2px solid ${C.amberBd}`, borderRadius: 20, padding: '28px 16px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.7 : 1, marginBottom: 14, position: 'relative' }}>
-          <div style={{ position: 'absolute', top: -13, left: '50%', transform: 'translateX(-50%)', background: C.amberBg, border: `1.5px solid ${C.amberBd}`, borderRadius: 99, padding: '3px 16px', fontSize: 11, fontWeight: 800, color: C.amber, letterSpacing: '.8px', whiteSpace: 'nowrap' }}>NEW</div>
+          <div style={{ position: 'absolute', top: -13, left: '50%', transform: 'translateX(-50%)', background: C.amberBg, border: `1.5px solid ${C.amberBd}`, borderRadius: 99, padding: '3px 16px', fontSize: 11, fontWeight: 800, color: C.amber, letterSpacing: '.8px', whiteSpace: 'nowrap' }}>{reRank ? 'THIS SPOT' : 'NEW'}</div>
           {avatar(newPhoto, '#1A1918', newIni)}
           <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 4, textAlign: 'center' }}>{newVenue.name}</div>
           <div style={{ fontSize: 13, color: C.sec }}>{newVenue.neighborhood || newVenue.city || 'NYC'}</div>
@@ -1462,16 +1466,49 @@ function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone }) {
   )
 }
 
+// Per-row action menu on the Mine list: re-rank (redo the head-to-heads) or
+// report. Matches ReportSheet's bottom-sheet styling.
+function RankActionsSheet({ item, onReRank, onReport, onClose }) {
+  const option = { width: '100%', display: 'flex', alignItems: 'center', gap: 14, padding: '14px', border: `1.5px solid ${C.border}`, borderRadius: 14, background: C.card, cursor: 'pointer', marginBottom: 10, textAlign: 'left' }
+  const iconWrap = { width: 44, height: 44, borderRadius: 12, background: C.surface, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
+  return (
+    <div style={{ position: 'absolute', inset: 0, zIndex: 40, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+      <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px', boxShadow: '0 -6px 24px rgba(0,0,0,0.18)' }}>
+        <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue?.name}</div>
+        <div style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>Currently #{item.rank} · {Number(item.score).toFixed(1)}</div>
+        <button onClick={onReRank} style={option}>
+          <div style={iconWrap}><i className="ti ti-arrows-sort" style={{ fontSize: 20, color: C.amber }} /></div>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Re-rank this spot</div>
+            <div style={{ fontSize: 12, color: C.muted }}>Redo the head-to-heads to move it</div>
+          </div>
+        </button>
+        <button onClick={onReport} style={option}>
+          <div style={iconWrap}><i className="ti ti-flag" style={{ fontSize: 20, color: C.sec }} /></div>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Report a problem</div>
+            <div style={{ fontSize: 12, color: C.muted }}>Not available, or not a real matchbook</div>
+          </div>
+        </button>
+        <button onClick={onClose} style={{ width: '100%', padding: 13, marginTop: 4, background: 'none', border: 'none', color: C.muted, fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+      </div>
+    </div>
+  )
+}
+
 // ─── RANKINGS SCREEN ─────────────────────────────────────
-function Rankings({ collection, venues, onFlag, onFakeReport, onSheetOpenChange }) {
+function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onSheetOpenChange }) {
   const [tab, setTab] = useState('mine')
   const [reporting, setReporting] = useState(null) // venue being reported
+  const [actions, setActions] = useState(null)     // ranked item whose ··· menu is open
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
 
   useEffect(() => {
-    onSheetOpenChange?.(!!reporting)
+    onSheetOpenChange?.(!!reporting || !!actions)
     return () => onSheetOpenChange?.(false)
-  }, [reporting]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [reporting, actions]) // eslint-disable-line react-hooks/exhaustive-deps
   // Attach venue and drop venue-less rows BEFORE numbering, so rank is always
   // contiguous with the rendered list (no gaps if a venue hasn't loaded yet).
   const ranked = collection
@@ -1544,7 +1581,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onSheetOpenChange 
                     <div style={{ fontSize: 12, color: C.muted }}>{item.venue.neighborhood || item.venue.city}</div>
                   </div>
                   <div style={{ fontSize: 18, fontWeight: 700, color: C.amber, flexShrink: 0 }}>{Number(item.score).toFixed(1)}</div>
-                  <button onClick={() => setReporting(item.venue)} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: '4px 2px', fontSize: 18, flexShrink: 0, letterSpacing: '.5px' }}>···</button>
+                  <button onClick={() => setActions(item)} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: '4px 2px', fontSize: 18, flexShrink: 0, letterSpacing: '.5px' }}>···</button>
                 </div>
               ))}
               <div style={{ height: 24 }} />
@@ -1588,6 +1625,15 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onSheetOpenChange 
           </div>
         )}
       </div>
+
+      {actions && (
+        <RankActionsSheet
+          item={actions}
+          onClose={() => setActions(null)}
+          onReRank={() => { const it = actions; setActions(null); onReRank?.(it) }}
+          onReport={() => { const v = actions.venue; setActions(null); setReporting(v) }}
+        />
+      )}
 
       {reporting && (
         <ReportSheet
@@ -2312,6 +2358,7 @@ export default function App() {
   const [showInvite, setShowInvite] = useState(false)
   const [showFind, setShowFind] = useState(false)
   const [viewingCollector, setViewingCollector] = useState(null) // { id, username, avatar_url, isFollowing }
+  const [reRankTarget, setReRankTarget] = useState(null) // { venue, photo, score } — re-ranking a spot via head-to-heads
   const [following, setFollowing] = useState([]) // [{ id, username, avatar_url, matchbooks }]
   const [sheetOpen, setSheetOpen] = useState(false) // a bottom sheet is open → hide TabBar
 
@@ -2568,6 +2615,7 @@ export default function App() {
     setShowInvite(false)
     setShowFind(false)
     setViewingCollector(null)
+    setReRankTarget(null)
     setShowAuth(true)
   }
 
@@ -2581,14 +2629,26 @@ export default function App() {
     [enrichedCollection]
   )
 
-  // Tapping a bottom tab from anywhere (Submit, Admin, Invite, Find) exits that
-  // flow and lands on the tab — so you're never stuck in a screen.
+  // Re-rank an already-ranked spot: pull it out of the list and re-place it via
+  // the same head-to-head flow, seeded with its current photo + score.
+  const startReRank = (item) => {
+    if (!item?.venue) return
+    setReRankTarget({
+      venue: item.venue,
+      photo: item.photo_url || (item.photos && item.photos[0]) || null,
+      score: item.score,
+    })
+  }
+
+  // Tapping a bottom tab from anywhere (Submit, Admin, Invite, Find, Re-rank)
+  // exits that flow and lands on the tab — so you're never stuck in a screen.
   const handleNav = (t) => {
     setShowSubmit(false)
     setShowAdmin(false)
     setShowInvite(false)
     setShowFind(false)
     setViewingCollector(null)
+    setReRankTarget(null)
     setSheetOpen(false)
     setTab(t)
   }
@@ -2631,7 +2691,17 @@ export default function App() {
 
   return (
     <div style={phoneStyle}>
-      {showSubmit ? (
+      {reRankTarget ? (
+        <ComparisonFlow
+          newVenue={reRankTarget.venue}
+          newPhoto={reRankTarget.photo}
+          initialScore={reRankTarget.score}
+          rankedItems={rankedItems}
+          user={user}
+          reRank
+          onDone={() => { setReRankTarget(null); refreshCollection(); setTab('rankings') }}
+        />
+      ) : showSubmit ? (
         <Submit
           onBack={() => setShowSubmit(false)}
           onAdded={handleAdded}
@@ -2677,7 +2747,7 @@ export default function App() {
             />
           )}
           {tab === 'rankings' && (
-            <Rankings collection={collection} venues={venues} onFlag={handleFlag} onFakeReport={handleFakeReport} onSheetOpenChange={setSheetOpen} />
+            <Rankings collection={collection} venues={venues} onFlag={handleFlag} onFakeReport={handleFakeReport} onReRank={startReRank} onSheetOpenChange={setSheetOpen} />
           )}
           {tab === 'collection' && (
             <Collection
