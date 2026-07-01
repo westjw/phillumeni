@@ -13,6 +13,7 @@ create table profiles (
   home_city text default 'NYC',
   is_admin boolean default false,        -- gates the moderation screens
   referred_by text,                      -- user id whose invite link they joined through
+  avatar_url text,                       -- profile picture (matchbooks bucket, public)
   created_at timestamptz default now()
 );
 
@@ -28,7 +29,7 @@ create policy "Users can update their own profile"
 -- restricts the COLUMNS. is_admin + id are deliberately excluded so a user can
 -- never self-promote to admin from the client.
 revoke update on profiles from authenticated;
-grant update (username, display_name, bio, home_city, referred_by)
+grant update (username, display_name, bio, home_city, referred_by, avatar_url)
   on profiles to authenticated;
 
 create policy "Users can insert their own profile"
@@ -316,13 +317,13 @@ grant execute on function my_referral_count() to authenticated;
 -- + count needs SECURITY DEFINER reads. Authenticated-only; return just a
 -- username + public count.
 create or replace function following_list()
-returns table (id uuid, username text, matchbooks integer)
+returns table (id uuid, username text, avatar_url text, matchbooks integer)
 language sql
 security definer
 stable
 set search_path = ''
 as $$
-  select p.id, p.username,
+  select p.id, p.username, p.avatar_url,
          (select count(*)::int from public.collections c where c.user_id = p.id)
   from public.follows f
   join public.profiles p on p.id = f.following_id
@@ -334,13 +335,13 @@ revoke execute on function following_list() from public, anon;
 grant execute on function following_list() to authenticated;
 
 create or replace function search_collectors(q text)
-returns table (id uuid, username text, matchbooks integer, is_following boolean)
+returns table (id uuid, username text, avatar_url text, matchbooks integer, is_following boolean)
 language sql
 security definer
 stable
 set search_path = ''
 as $$
-  select p.id, p.username,
+  select p.id, p.username, p.avatar_url,
          (select count(*)::int from public.collections c where c.user_id = p.id),
          exists (select 1 from public.follows f where f.follower_id = auth.uid() and f.following_id = p.id)
   from public.profiles p

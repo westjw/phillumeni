@@ -1602,11 +1602,36 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onSheetOpenChange 
 }
 
 // ─── PROFILE SCREEN ──────────────────────────────────────
-function ProfileScreen({ user, collection, onSignOut, isAdmin, pendingReports = 0, onOpenAdmin, onOpenInvite, following = [], onUnfollow, onOpenFind }) {
+function ProfileScreen({ user, collection, onSignOut, isAdmin, pendingReports = 0, onOpenAdmin, onOpenInvite, following = [], onUnfollow, onOpenFind, avatarUrl, onAvatarChange }) {
   const byCity = Object.entries(collection.filter(i => i.venue).reduce((m, i) => {
     const c = i.venue.city || 'Unknown'; m[c] = (m[c] || 0) + 1; return m
   }, {})).sort((a, b) => b[1] - a[1])
   const username = user.user_metadata?.username || user.email?.split('@')[0] || 'collector'
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
+  const [avatarErr, setAvatarErr] = useState('')
+  const avatarInputRef = useRef(null)
+
+  const pickAvatar = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file || !user) return
+    setUploadingAvatar(true)
+    setAvatarErr('')
+    try {
+      const blob = await downscaleImage(file, 512, 0.85)
+      const path = `${user.id}/avatar-${crypto.randomUUID()}.jpg`
+      const { error: upErr } = await supabase.storage.from('matchbooks').upload(path, blob, { contentType: 'image/jpeg', upsert: false })
+      if (upErr) throw upErr
+      const url = supabase.storage.from('matchbooks').getPublicUrl(path).data.publicUrl
+      const { error: updErr } = await supabase.from('profiles').update({ avatar_url: url }).eq('id', user.id)
+      if (updErr) throw updErr
+      onAvatarChange?.(url)
+    } catch (err) {
+      console.error('Avatar upload failed', err)
+      setAvatarErr('Couldn’t update your photo — try again.')
+    }
+    setUploadingAvatar(false)
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
@@ -1614,11 +1639,26 @@ function ProfileScreen({ user, collection, onSignOut, isAdmin, pendingReports = 
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '14px 16px' }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 12 }}>
-            <Av ini={username.slice(0, 2).toUpperCase()} bg={C.purpleBg} tc={C.purple} size={64} />
+            <div onClick={() => !uploadingAvatar && avatarInputRef.current?.click()} style={{ position: 'relative', width: 64, height: 64, cursor: 'pointer', flexShrink: 0 }}>
+              {avatarUrl
+                ? <img src={avatarUrl} alt="" style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover' }} />
+                : <Av ini={username.slice(0, 2).toUpperCase()} bg={C.purpleBg} tc={C.purple} size={64} />}
+              <div style={{ position: 'absolute', bottom: -2, right: -2, width: 24, height: 24, borderRadius: '50%', background: C.dark, border: '2px solid #fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <i className="ti ti-camera" style={{ fontSize: 12, color: '#fff' }} />
+              </div>
+              {uploadingAvatar && (
+                <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <div style={{ width: 18, height: 18, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)', borderTop: '2px solid #fff', animation: 'spin 1s linear infinite' }} />
+                </div>
+              )}
+            </div>
             <button onClick={onSignOut} style={{ fontSize: 12, color: C.muted, background: 'none', border: `0.5px solid ${C.border}`, borderRadius: 8, padding: '6px 12px', cursor: 'pointer' }}>Sign out</button>
           </div>
+          <input ref={avatarInputRef} type="file" accept="image/*" onChange={pickAvatar} style={{ display: 'none' }} />
+          <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
           <div style={{ fontSize: 18, fontWeight: 700, color: C.text, letterSpacing: '-.3px', marginBottom: 2 }}>{username}</div>
-          <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>{user.email}</div>
+          <div style={{ fontSize: 13, color: C.muted, marginBottom: avatarErr ? 6 : 14 }}>{user.email}</div>
+          {avatarErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, lineHeight: 1.4 }}>{avatarErr}</div>}
 
           <button onClick={onOpenInvite} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 13, marginBottom: 14, background: C.dark, color: '#fff', border: 'none', borderRadius: 12, fontSize: 14, fontWeight: 700, cursor: 'pointer', letterSpacing: '-.1px' }}>
             <i className="ti ti-user-plus" style={{ fontSize: 16 }} />
@@ -1640,7 +1680,9 @@ function ProfileScreen({ user, collection, onSignOut, isAdmin, pendingReports = 
             ) : (
               following.map(f => (
                 <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `0.5px solid ${C.border}` }}>
-                  <div style={{ width: 34, height: 34, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(f.username || '?').slice(0, 2).toUpperCase()}</div>
+                  {f.avatar_url
+                    ? <img src={f.avatar_url} alt="" style={{ width: 34, height: 34, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+                    : <div style={{ width: 34, height: 34, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(f.username || '?').slice(0, 2).toUpperCase()}</div>}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.username}</div>
                     <div style={{ fontSize: 11, color: C.muted }}>{f.matchbooks} {f.matchbooks === 1 ? 'matchbook' : 'matchbooks'}</div>
@@ -1845,7 +1887,9 @@ function FindCollectors({ onFollow, onUnfollow, onBack }) {
       <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 24px' }}>
         {results.map(r => (
           <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '10px 0', borderBottom: `0.5px solid ${C.border}` }}>
-            <div style={{ width: 38, height: 38, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(r.username || '?').slice(0, 2).toUpperCase()}</div>
+            {r.avatar_url
+              ? <img src={r.avatar_url} alt="" style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+              : <div style={{ width: 38, height: 38, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(r.username || '?').slice(0, 2).toUpperCase()}</div>}
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.username}</div>
               <div style={{ fontSize: 11, color: C.muted }}>{r.matchbooks} {r.matchbooks === 1 ? 'matchbook' : 'matchbooks'}</div>
@@ -2165,6 +2209,7 @@ export default function App() {
   const [recoveryMode, setRecoveryMode] = useState(false) // arrived via a password-reset link
   const [venuesError, setVenuesError] = useState(false)
   const [isAdmin, setIsAdmin] = useState(false)
+  const [myAvatar, setMyAvatar] = useState(null)
   const [fakeReports, setFakeReports] = useState([]) // pending fake_reports (admin only)
   const [showAdmin, setShowAdmin] = useState(false)
   const [showInvite, setShowInvite] = useState(false)
@@ -2259,11 +2304,21 @@ export default function App() {
       })
   }, [user])
 
-  // Am I an admin? (own profile is readable under the owner-only SELECT policy)
+  // Load my profile flags (admin + avatar). Own profile is readable under the
+  // owner-only SELECT policy. Tolerates avatar_url being unmigrated (pre-015).
   useEffect(() => {
-    if (!user) { setIsAdmin(false); return }
-    supabase.from('profiles').select('is_admin').eq('id', user.id).maybeSingle()
-      .then(({ data, error }) => { if (!error) setIsAdmin(!!data?.is_admin) })
+    if (!user) { setIsAdmin(false); setMyAvatar(null); return }
+    let cancelled = false
+    ;(async () => {
+      let { data, error } = await supabase.from('profiles').select('is_admin, avatar_url').eq('id', user.id).maybeSingle()
+      if (error && isMissingColumn(error)) {
+        ;({ data, error } = await supabase.from('profiles').select('is_admin').eq('id', user.id).maybeSingle())
+      }
+      if (cancelled || error) return
+      setIsAdmin(!!data?.is_admin)
+      setMyAvatar(data?.avatar_url || null)
+    })()
+    return () => { cancelled = true }
   }, [user])
 
   // Load the pending fake-report queue (RLS returns rows only to admins). The
@@ -2408,6 +2463,7 @@ export default function App() {
     setCollection([])
     setReported([])
     setIsAdmin(false)
+    setMyAvatar(null)
     setFakeReports([])
     setFollowing([])
     setShowAdmin(false)
@@ -2535,6 +2591,8 @@ export default function App() {
               following={following}
               onUnfollow={handleUnfollow}
               onOpenFind={() => setShowFind(true)}
+              avatarUrl={myAvatar}
+              onAvatarChange={setMyAvatar}
             />
           )}
         </>
