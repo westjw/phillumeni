@@ -356,6 +356,31 @@ $$;
 revoke execute on function search_collectors(text) from public, anon;
 grant execute on function search_collectors(text) to authenticated;
 
+-- View a collector's ranked collection — only if you follow them (spec #19 kept
+-- otherwise). Aggregate/rows are gated by the exists() follow check.
+create or replace function collector_profile(target uuid)
+returns table (venue_id integer, name text, neighborhood text, city text, bg_color text, score numeric, photo text)
+language sql
+security definer
+stable
+set search_path = ''
+as $$
+  select c.venue_id, v.name, v.neighborhood, v.city, v.bg_color, c.score,
+         coalesce(nullif(c.photo_url, ''), (case when array_length(c.photos, 1) > 0 then c.photos[1] else null end))
+  from public.collections c
+  join public.venues v on v.id = c.venue_id
+  where c.user_id = target
+    and c.score is not null
+    and exists (
+      select 1 from public.follows f
+      where f.follower_id = auth.uid() and f.following_id = target
+    )
+  order by c.score desc;
+$$;
+
+revoke execute on function collector_profile(uuid) from public, anon;
+grant execute on function collector_profile(uuid) to authenticated;
+
 -- Friends rankings: per-venue AVG(score) across the people I follow (spec §3).
 -- Aggregate + ranker count only, never a name. Authenticated-only. NOTE: with a
 -- single ranker the average equals that person's score (no name); add

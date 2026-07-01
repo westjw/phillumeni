@@ -1602,7 +1602,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onSheetOpenChange 
 }
 
 // ─── PROFILE SCREEN ──────────────────────────────────────
-function ProfileScreen({ user, collection, onSignOut, isAdmin, pendingReports = 0, onOpenAdmin, onOpenInvite, following = [], onUnfollow, onOpenFind, avatarUrl, onAvatarChange }) {
+function ProfileScreen({ user, collection, onSignOut, isAdmin, pendingReports = 0, onOpenAdmin, onOpenInvite, following = [], onUnfollow, onOpenFind, onViewCollector, avatarUrl, onAvatarChange }) {
   const byCity = Object.entries(collection.filter(i => i.venue).reduce((m, i) => {
     const c = i.venue.city || 'Unknown'; m[c] = (m[c] || 0) + 1; return m
   }, {})).sort((a, b) => b[1] - a[1])
@@ -1680,12 +1680,14 @@ function ProfileScreen({ user, collection, onSignOut, isAdmin, pendingReports = 
             ) : (
               following.map(f => (
                 <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `0.5px solid ${C.border}` }}>
-                  {f.avatar_url
-                    ? <img src={f.avatar_url} alt="" style={{ width: 34, height: 34, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-                    : <div style={{ width: 34, height: 34, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(f.username || '?').slice(0, 2).toUpperCase()}</div>}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.username}</div>
-                    <div style={{ fontSize: 11, color: C.muted }}>{f.matchbooks} {f.matchbooks === 1 ? 'matchbook' : 'matchbooks'}</div>
+                  <div onClick={() => onViewCollector?.({ id: f.id, username: f.username, avatar_url: f.avatar_url, isFollowing: true })} style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, cursor: 'pointer' }}>
+                    {f.avatar_url
+                      ? <img src={f.avatar_url} alt="" style={{ width: 34, height: 34, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+                      : <div style={{ width: 34, height: 34, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(f.username || '?').slice(0, 2).toUpperCase()}</div>}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.username}</div>
+                      <div style={{ fontSize: 11, color: C.muted }}>{f.matchbooks} {f.matchbooks === 1 ? 'matchbook' : 'matchbooks'}</div>
+                    </div>
                   </div>
                   <button onClick={() => onUnfollow?.(f.id)} style={{ flexShrink: 0, fontSize: 11.5, fontWeight: 700, padding: '5px 12px', borderRadius: 99, border: `1px solid ${C.border}`, background: 'transparent', color: C.sec, cursor: 'pointer' }}>Following</button>
                 </div>
@@ -1833,7 +1835,7 @@ function InviteScreen({ user, onBack }) {
 // ─── FIND COLLECTORS (follow discovery) ──────────────────
 // Username search → follow/unfollow. Reads come from a SECURITY DEFINER RPC
 // (profiles are owner-only); follows are written directly under their own RLS.
-function FindCollectors({ onFollow, onUnfollow, onBack }) {
+function FindCollectors({ onFollow, onUnfollow, onView, onBack }) {
   const [q, setQ] = useState('')
   const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
@@ -1887,12 +1889,14 @@ function FindCollectors({ onFollow, onUnfollow, onBack }) {
       <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 24px' }}>
         {results.map(r => (
           <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '10px 0', borderBottom: `0.5px solid ${C.border}` }}>
-            {r.avatar_url
-              ? <img src={r.avatar_url} alt="" style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-              : <div style={{ width: 38, height: 38, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(r.username || '?').slice(0, 2).toUpperCase()}</div>}
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.username}</div>
-              <div style={{ fontSize: 11, color: C.muted }}>{r.matchbooks} {r.matchbooks === 1 ? 'matchbook' : 'matchbooks'}</div>
+            <div onClick={() => onView?.({ id: r.id, username: r.username, avatar_url: r.avatar_url, isFollowing: r.is_following })} style={{ display: 'flex', alignItems: 'center', gap: 11, flex: 1, minWidth: 0, cursor: 'pointer' }}>
+              {r.avatar_url
+                ? <img src={r.avatar_url} alt="" style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+                : <div style={{ width: 38, height: 38, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(r.username || '?').slice(0, 2).toUpperCase()}</div>}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.username}</div>
+                <div style={{ fontSize: 11, color: C.muted }}>{r.matchbooks} {r.matchbooks === 1 ? 'matchbook' : 'matchbooks'}</div>
+              </div>
             </div>
             <button onClick={() => toggle(r)} disabled={busyId === r.id}
               style={{ flexShrink: 0, fontSize: 12, fontWeight: 700, padding: '7px 16px', borderRadius: 99, cursor: busyId === r.id ? 'default' : 'pointer', border: r.is_following ? `1px solid ${C.border}` : 'none', background: r.is_following ? 'transparent' : C.dark, color: r.is_following ? C.sec : '#fff', opacity: busyId === r.id ? 0.6 : 1 }}>
@@ -1905,6 +1909,99 @@ function FindCollectors({ onFollow, onUnfollow, onBack }) {
         )}
         {q.trim().length === 0 && (
           <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: C.muted, fontSize: 13, lineHeight: 1.6 }}>Search a username to follow other collectors and compare lists.</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── COLLECTOR PROFILE (a collector you follow) ──────────
+// Follow-gated: collector_profile() returns their ranked collection only if you
+// follow them (migration 016). Reached from the Following list + Find collectors.
+function CollectorProfile({ collector, isFollowing, onFollow, onUnfollow, onBack }) {
+  const [rows, setRows] = useState(null) // null = loading, [] = none/locked
+  const [following, setFollowing] = useState(!!isFollowing)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setRows(null)
+    supabase.rpc('collector_profile', { target: collector.id }).then(({ data, error }) => {
+      if (cancelled) return
+      setRows(error ? [] : (data || []))
+    })
+    return () => { cancelled = true }
+  }, [collector.id, following])
+
+  const toggle = async () => {
+    setBusy(true)
+    const ok = following ? await onUnfollow(collector.id) : await onFollow(collector.id)
+    if (ok) setFollowing(!following)
+    setBusy(false)
+  }
+
+  const ranked = (rows || []).map((r, idx) => ({ ...r, rank: idx + 1 }))
+  const cities = new Set((rows || []).map(r => r.city).filter(Boolean)).size
+  const rankCircle = (n) => ({
+    width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 13, fontWeight: 700, flexShrink: 0,
+    background: n === 1 ? '#F5E0A8' : n === 2 ? '#E2E2E2' : n === 3 ? '#E8C2A0' : C.surface,
+    color: n === 1 ? '#7A5A0A' : n === 2 ? '#737373' : n === 3 ? '#7A4A1A' : C.muted,
+  })
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: C.bg }}>
+      <SBar />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px 0', flexShrink: 0 }}>
+        <button onClick={onBack} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, color: C.amber, fontSize: 13, fontWeight: 700 }}>
+          <i className="ti ti-arrow-left" style={{ fontSize: 14 }} />Back
+        </button>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', padding: '10px 16px 24px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 18 }}>
+          {collector.avatar_url
+            ? <img src={collector.avatar_url} alt="" style={{ width: 60, height: 60, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+            : <Av ini={(collector.username || '?').slice(0, 2).toUpperCase()} bg={C.purpleBg} tc={C.purple} size={60} />}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 19, fontWeight: 800, color: C.text, letterSpacing: '-.4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{collector.username}</div>
+            <div style={{ fontSize: 12.5, color: C.muted, marginTop: 1 }}>
+              {following ? `${ranked.length} ranked${cities ? ` · ${cities} ${cities === 1 ? 'city' : 'cities'}` : ''}` : 'Follow to see their collection'}
+            </div>
+          </div>
+          <button onClick={toggle} disabled={busy}
+            style={{ flexShrink: 0, fontSize: 12.5, fontWeight: 700, padding: '8px 16px', borderRadius: 99, cursor: busy ? 'default' : 'pointer', border: following ? `1px solid ${C.border}` : 'none', background: following ? 'transparent' : C.dark, color: following ? C.sec : '#fff', opacity: busy ? 0.6 : 1 }}>
+            {following ? 'Following' : 'Follow'}
+          </button>
+        </div>
+
+        {rows === null ? (
+          <div style={{ textAlign: 'center', padding: '3rem 1rem', color: C.muted, fontSize: 13 }}>Loading…</div>
+        ) : !following ? (
+          <div style={{ textAlign: 'center', padding: '3rem 1.5rem' }}>
+            <i className="ti ti-lock" style={{ fontSize: 34, color: C.borderStr }} />
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text, margin: '12px 0 6px' }}>Followers only</div>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>Follow {collector.username} to see their ranked matchbooks.</div>
+          </div>
+        ) : ranked.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '3rem 1.5rem', color: C.muted, fontSize: 13 }}>{collector.username} hasn't ranked anything yet.</div>
+        ) : (
+          <div>
+            {ranked.map(item => (
+              <div key={item.venue_id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}` }}>
+                <div style={rankCircle(item.rank)}>{item.rank}</div>
+                {item.photo
+                  ? <img src={item.photo} alt="" style={{ width: 42, height: 42, borderRadius: 11, objectFit: 'cover', flexShrink: 0 }} />
+                  : <div style={{ width: 42, height: 42, borderRadius: 11, background: item.bg_color || C.dark, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0, letterSpacing: '-.2px' }}>{venueInitials(item.name)}</div>}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.name}</div>
+                  <div style={{ fontSize: 12, color: C.muted }}>{item.neighborhood || item.city}</div>
+                </div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: C.amber, flexShrink: 0 }}>{Number(item.score).toFixed(1)}</div>
+              </div>
+            ))}
+            <div style={{ height: 24 }} />
+          </div>
         )}
       </div>
     </div>
@@ -2214,7 +2311,8 @@ export default function App() {
   const [showAdmin, setShowAdmin] = useState(false)
   const [showInvite, setShowInvite] = useState(false)
   const [showFind, setShowFind] = useState(false)
-  const [following, setFollowing] = useState([]) // [{ id, username, matchbooks }]
+  const [viewingCollector, setViewingCollector] = useState(null) // { id, username, avatar_url, isFollowing }
+  const [following, setFollowing] = useState([]) // [{ id, username, avatar_url, matchbooks }]
   const [sheetOpen, setSheetOpen] = useState(false) // a bottom sheet is open → hide TabBar
 
   // Auth state
@@ -2469,6 +2567,7 @@ export default function App() {
     setShowAdmin(false)
     setShowInvite(false)
     setShowFind(false)
+    setViewingCollector(null)
     setShowAuth(true)
   }
 
@@ -2489,6 +2588,7 @@ export default function App() {
     setShowAdmin(false)
     setShowInvite(false)
     setShowFind(false)
+    setViewingCollector(null)
     setSheetOpen(false)
     setTab(t)
   }
@@ -2551,7 +2651,15 @@ export default function App() {
       ) : showInvite ? (
         <InviteScreen user={user} onBack={() => setShowInvite(false)} />
       ) : showFind ? (
-        <FindCollectors onFollow={handleFollow} onUnfollow={handleUnfollow} onBack={() => setShowFind(false)} />
+        <FindCollectors onFollow={handleFollow} onUnfollow={handleUnfollow} onView={(c) => { setShowFind(false); setViewingCollector(c) }} onBack={() => setShowFind(false)} />
+      ) : viewingCollector ? (
+        <CollectorProfile
+          collector={viewingCollector}
+          isFollowing={viewingCollector.isFollowing ?? following.some(f => f.id === viewingCollector.id)}
+          onFollow={handleFollow}
+          onUnfollow={handleUnfollow}
+          onBack={() => setViewingCollector(null)}
+        />
       ) : (
         <>
           {tab === 'explore' && (
@@ -2591,6 +2699,7 @@ export default function App() {
               following={following}
               onUnfollow={handleUnfollow}
               onOpenFind={() => setShowFind(true)}
+              onViewCollector={setViewingCollector}
               avatarUrl={myAvatar}
               onAvatarChange={setMyAvatar}
             />

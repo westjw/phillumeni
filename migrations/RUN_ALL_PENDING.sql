@@ -1,13 +1,10 @@
 -- ════════════════════════════════════════════════════════════════
--- RUN ALL PENDING MIGRATIONS (006 → 015) + make yourself admin.
+-- RUN ALL PENDING MIGRATIONS (006 → 016) + make yourself admin.
 -- Paste this ENTIRE file into the Supabase SQL editor and click Run.
--- Safe on a fresh DB at migration 005. Idempotent-ish (drops+recreates fns).
--- NOTE: 007 wipes the leftover seed venues (zero-seed by design).
+-- Safe on a fresh DB at migration 005. NOTE: 007 wipes seed venues.
 -- ════════════════════════════════════════════════════════════════
 
--- ─────────────────────────────────────────────────────────────
--- 006_collection_photos.sql
--- ─────────────────────────────────────────────────────────────
+-- ── 006_collection_photos.sql ──
 -- Migration 006 — multiple photos per collected matchbook
 -- Run ONCE in the Supabase SQL editor. Idempotent.
 --
@@ -16,9 +13,7 @@
 
 alter table public.collections add column if not exists photos text[] not null default '{}';
 
--- ─────────────────────────────────────────────────────────────
--- 007_submit_and_ranking.sql
--- ─────────────────────────────────────────────────────────────
+-- ── 007_submit_and_ranking.sql ──
 -- Migration 007 — adopt the Submit & Ranking spec (foundation)
 -- Run ONCE in the Supabase SQL editor. Idempotent.
 
@@ -100,9 +95,7 @@ create policy "Admins can delete any venue"
 -- update public.profiles set is_admin = true
 --   where id = (select id from auth.users where email = 'wyethwest@gmail.com');
 
--- ─────────────────────────────────────────────────────────────
--- 008_admin_profile_reads.sql
--- ─────────────────────────────────────────────────────────────
+-- ── 008_admin_profile_reads.sql ──
 -- Migration 008 — let admins resolve usernames for the Reported-photos queue.
 -- Run ONCE in the Supabase SQL editor, AFTER 007. Idempotent.
 --
@@ -130,9 +123,7 @@ create policy "Admins can view all profiles"
   on public.profiles for select
   using (public.is_admin());
 
--- ─────────────────────────────────────────────────────────────
--- 009_venue_photos.sql
--- ─────────────────────────────────────────────────────────────
+-- ── 009_venue_photos.sql ──
 -- Migration 009 — per-venue photo gallery for the venue detail page.
 -- Run ONCE in the Supabase SQL editor, AFTER 006 (needs collections.photos).
 --
@@ -177,9 +168,7 @@ $$;
 revoke execute on function public.venue_photos(integer) from public;
 grant execute on function public.venue_photos(integer) to authenticated;
 
--- ─────────────────────────────────────────────────────────────
--- 010_referrals.sql
--- ─────────────────────────────────────────────────────────────
+-- ── 010_referrals.sql ──
 -- Migration 010 — invite/referral attribution for the "Invite friends" link.
 -- Run ONCE in the Supabase SQL editor. Idempotent.
 --
@@ -210,9 +199,7 @@ $$;
 revoke execute on function public.my_referral_count() from public;
 grant execute on function public.my_referral_count() to authenticated;
 
--- ─────────────────────────────────────────────────────────────
--- 011_follow_graph.sql
--- ─────────────────────────────────────────────────────────────
+-- ── 011_follow_graph.sql ──
 -- Migration 011 — follow graph helpers for the social layer.
 -- Run ONCE in the Supabase SQL editor. Idempotent. The `follows` table and its
 -- RLS already exist (base schema); this only adds the read-side RPCs.
@@ -267,9 +254,7 @@ $$;
 revoke execute on function public.search_collectors(text) from public;
 grant execute on function public.search_collectors(text) to authenticated;
 
--- ─────────────────────────────────────────────────────────────
--- 012_friends_rankings.sql
--- ─────────────────────────────────────────────────────────────
+-- ── 012_friends_rankings.sql ──
 -- Migration 012 — Friends rankings (spec §3 "Aggregating to Friends").
 -- Run ONCE in the Supabase SQL editor, AFTER 007 (needs collections.score).
 --
@@ -304,9 +289,7 @@ $$;
 revoke execute on function public.friends_rankings() from public;
 grant execute on function public.friends_rankings() to authenticated;
 
--- ─────────────────────────────────────────────────────────────
--- 013_restrict_rpc_anon.sql
--- ─────────────────────────────────────────────────────────────
+-- ── 013_restrict_rpc_anon.sql ──
 -- Migration 013 — actually restrict the SECURITY DEFINER RPCs to authenticated.
 -- Run ONCE in the Supabase SQL editor, AFTER 012.
 --
@@ -326,9 +309,7 @@ revoke execute on function public.following_list() from anon;
 revoke execute on function public.search_collectors(text) from anon;
 revoke execute on function public.friends_rankings() from anon;
 
--- ─────────────────────────────────────────────────────────────
--- 014_lock_profile_columns.sql
--- ─────────────────────────────────────────────────────────────
+-- ── 014_lock_profile_columns.sql ──
 -- Migration 014 — SECURITY: stop users writing privileged profile columns.
 -- Run ONCE in the Supabase SQL editor (do this ASAP — it's a real escalation).
 --
@@ -346,9 +327,7 @@ revoke update on public.profiles from authenticated;
 grant update (username, display_name, bio, home_city, referred_by)
   on public.profiles to authenticated;
 
--- ─────────────────────────────────────────────────────────────
--- 015_profile_avatars.sql
--- ─────────────────────────────────────────────────────────────
+-- ── 015_profile_avatars.sql ──
 -- Migration 015 — profile pictures. Run ONCE in the Supabase SQL editor.
 -- Avatars are stored in the existing `matchbooks` bucket under the user's own
 -- folder (<user_id>/avatar-*.jpg), which the existing per-user write policy
@@ -405,5 +384,35 @@ $$;
 revoke execute on function public.search_collectors(text) from public, anon;
 grant execute on function public.search_collectors(text) to authenticated;
 
--- Make yourself admin (your app-login email)
+-- ── 016_collector_profile.sql ──
+-- Migration 016 — view another collector's profile. Run ONCE in the SQL editor.
+--
+-- Returns a collector's ranked collection (venue + their score + their photo),
+-- but ONLY if the caller follows them (the exists() gate) — keeping collections
+-- otherwise owner-only per the #19 lock-down. SECURITY DEFINER + authenticated-only.
+-- Not following (or anon) → zero rows.
+
+create or replace function public.collector_profile(target uuid)
+returns table (venue_id integer, name text, neighborhood text, city text, bg_color text, score numeric, photo text)
+language sql
+security definer
+stable
+set search_path = ''
+as $$
+  select c.venue_id, v.name, v.neighborhood, v.city, v.bg_color, c.score,
+         coalesce(nullif(c.photo_url, ''), (case when array_length(c.photos, 1) > 0 then c.photos[1] else null end))
+  from public.collections c
+  join public.venues v on v.id = c.venue_id
+  where c.user_id = target
+    and c.score is not null
+    and exists (
+      select 1 from public.follows f
+      where f.follower_id = auth.uid() and f.following_id = target
+    )
+  order by c.score desc;
+$$;
+
+revoke execute on function public.collector_profile(uuid) from public, anon;
+grant execute on function public.collector_profile(uuid) to authenticated;
+
 update public.profiles set is_admin = true where id = (select id from auth.users where email = 'wyethwest@gmail.com');
