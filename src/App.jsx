@@ -442,10 +442,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
           </div>
         ) : (
           <div style={{ padding: '12px 16px 8px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{listed.length} spots nearby</div>
-              <div style={{ fontSize: 11, color: C.muted }}>amber = yours</div>
-            </div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 10 }}>{listed.length} spots nearby</div>
             {listed.map(v => (
               <div key={v.id} onClick={() => setSelected(v)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '9px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
                 <div style={{ width: 38, height: 38, borderRadius: 11, background: v.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{v.emoji}</div>
