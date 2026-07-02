@@ -627,7 +627,7 @@ function Collection({ items, venues, onRemove, onSubmit }) {
 }
 
 // ─── SUBMIT SCREEN ───────────────────────────────────────
-function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onSheetOpenChange }) {
+function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = new Set(), onRankingDone, onSheetOpenChange }) {
   const [step, setStep] = useState(1)
   const [photos, setPhotos] = useState([]) // { id, preview, url, path, status: 'uploading'|'done'|'error' }
   const photosRef = useRef(photos)
@@ -1136,19 +1136,26 @@ function Submit({ onBack, onAdded, user, rankedItems = [], onRankingDone, onShee
 
             {results.length > 0 && (
               <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
-                {results.map((r, i) => (
-                  <div key={r.id} onClick={() => { setPicked(r); setQuery(r.name); setAddErr('') }}
-                    style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '12px 14px', borderBottom: i < results.length - 1 ? `0.5px solid ${C.border}` : 'none', cursor: 'pointer', background: picked?.id === r.id ? C.greenBg : 'transparent', transition: 'background .1s' }}>
-                    <div style={{ width: 38, height: 38, borderRadius: 10, background: C.surface, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                      <i className="ti ti-map-pin" style={{ fontSize: 17, color: picked?.id === r.id ? C.green : C.muted }} />
+                {results.map((r, i) => {
+                  // A place already in your collection can't be added again — flag it
+                  // and make the row non-selectable so you can't re-submit it.
+                  const mine = collectedMapboxIds.has(r.mapbox_id)
+                  return (
+                    <div key={r.id} onClick={mine ? undefined : () => { setPicked(r); setQuery(r.name); setAddErr('') }}
+                      style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '12px 14px', borderBottom: i < results.length - 1 ? `0.5px solid ${C.border}` : 'none', cursor: mine ? 'default' : 'pointer', background: picked?.id === r.id ? C.greenBg : 'transparent', opacity: mine ? 0.6 : 1, transition: 'background .1s' }}>
+                      <div style={{ width: 38, height: 38, borderRadius: 10, background: C.surface, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <i className="ti ti-map-pin" style={{ fontSize: 17, color: picked?.id === r.id ? C.green : C.muted }} />
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{r.name}</div>
+                        <div style={{ fontSize: 11, color: C.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.address}</div>
+                      </div>
+                      {mine
+                        ? <span style={{ fontSize: 10.5, fontWeight: 800, color: C.amber, letterSpacing: '.3px', flexShrink: 0, whiteSpace: 'nowrap' }}>✓ IN COLLECTION</span>
+                        : picked?.id === r.id && <i className="ti ti-check" style={{ fontSize: 16, color: C.green, flexShrink: 0 }} />}
                     </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{r.name}</div>
-                      <div style={{ fontSize: 11, color: C.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.address}</div>
-                    </div>
-                    {picked?.id === r.id && <i className="ti ti-check" style={{ fontSize: 16, color: C.green, flexShrink: 0 }} />}
-                  </div>
-                ))}
+                  )
+                })}
               </Card>
             )}
 
@@ -2698,6 +2705,13 @@ export default function App() {
     () => enrichedCollection.filter(i => i.score != null && i.venue).sort((a, b) => b.score - a.score),
     [enrichedCollection]
   )
+  // mapbox_ids of venues already in your collection — lets Submit flag (and block)
+  // a place you've already got right in the search results, instead of only at the
+  // end of the flow.
+  const collectedMapboxIds = useMemo(
+    () => new Set(enrichedCollection.map(i => i.venue?.mapbox_id).filter(Boolean)),
+    [enrichedCollection]
+  )
 
   // Re-rank an already-ranked spot: pull it out of the list and re-place it via
   // the same head-to-head flow, seeded with its current photo + score.
@@ -2785,6 +2799,7 @@ export default function App() {
           onAdded={handleAdded}
           user={user}
           rankedItems={rankedItems}
+          collectedMapboxIds={collectedMapboxIds}
           onRankingDone={() => { refreshCollection(); setShowSubmit(false); setTab('rankings') }}
           onSheetOpenChange={setSheetOpen}
         />
