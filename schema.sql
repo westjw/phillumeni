@@ -27,9 +27,10 @@ create policy "Users can update their own profile"
 
 -- SECURITY: the policy restricts the ROW (your own); this column-scoped grant
 -- restricts the COLUMNS. is_admin + id are deliberately excluded so a user can
--- never self-promote to admin from the client.
+-- never self-promote to admin from the client. username is excluded too (017):
+-- it's now a hidden internal key, not user-writable — identity is display_name.
 revoke update on profiles from authenticated;
-grant update (username, display_name, bio, home_city, referred_by, avatar_url)
+grant update (display_name, bio, home_city, referred_by, avatar_url)
   on profiles to authenticated;
 
 create policy "Users can insert their own profile"
@@ -313,43 +314,45 @@ revoke execute on function my_referral_count() from public, anon;
 grant execute on function my_referral_count() to authenticated;
 
 -- ─── FOLLOW GRAPH ────────────────────────────────────────
--- profiles/collections are owner-only, so showing a followed collector's handle
+-- profiles/collections are owner-only, so showing a followed collector's name
 -- + count needs SECURITY DEFINER reads. Authenticated-only; return just a
--- username + public count.
+-- display_name + public count (identity is the real name, not a handle — 017).
 create or replace function following_list()
-returns table (id uuid, username text, avatar_url text, matchbooks integer)
+returns table (id uuid, display_name text, avatar_url text, matchbooks integer)
 language sql
 security definer
 stable
 set search_path = ''
 as $$
-  select p.id, p.username, p.avatar_url,
+  select p.id, p.display_name, p.avatar_url,
          (select count(*)::int from public.collections c where c.user_id = p.id)
   from public.follows f
   join public.profiles p on p.id = f.following_id
   where f.follower_id = auth.uid()
-  order by p.username;
+  order by p.display_name;
 $$;
 
 revoke execute on function following_list() from public, anon;
 grant execute on function following_list() to authenticated;
 
+-- Search collectors by real NAME (substring, wildcard-escaped so "%" can't dump
+-- the directory). Returns display_name; authenticated-only (017).
 create or replace function search_collectors(q text)
-returns table (id uuid, username text, avatar_url text, matchbooks integer, is_following boolean)
+returns table (id uuid, display_name text, avatar_url text, matchbooks integer, is_following boolean)
 language sql
 security definer
 stable
 set search_path = ''
 as $$
-  select p.id, p.username, p.avatar_url,
+  select p.id, p.display_name, p.avatar_url,
          (select count(*)::int from public.collections c where c.user_id = p.id),
          exists (select 1 from public.follows f where f.follower_id = auth.uid() and f.following_id = p.id)
   from public.profiles p
   where p.id <> auth.uid()
-    and p.username is not null
+    and p.display_name is not null
     and length(trim(coalesce(q, ''))) >= 1
-    and p.username ilike replace(replace(replace(q, '\', '\\'), '%', '\%'), '_', '\_') || '%'
-  order by p.username
+    and p.display_name ilike '%' || replace(replace(replace(q, '\', '\\'), '%', '\%'), '_', '\_') || '%'
+  order by p.display_name
   limit 20;
 $$;
 

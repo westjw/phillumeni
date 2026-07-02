@@ -1648,11 +1648,11 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onSheetO
 }
 
 // ─── PROFILE SCREEN ──────────────────────────────────────
-function ProfileScreen({ user, collection, onSignOut, isAdmin, pendingReports = 0, onOpenAdmin, onOpenInvite, following = [], onUnfollow, onOpenFind, onViewCollector, avatarUrl, onAvatarChange }) {
+function ProfileScreen({ user, displayName, collection, onSignOut, isAdmin, pendingReports = 0, onOpenAdmin, onOpenInvite, following = [], onUnfollow, onOpenFind, onViewCollector, avatarUrl, onAvatarChange }) {
   const byCity = Object.entries(collection.filter(i => i.venue).reduce((m, i) => {
     const c = i.venue.city || 'Unknown'; m[c] = (m[c] || 0) + 1; return m
   }, {})).sort((a, b) => b[1] - a[1])
-  const username = user.user_metadata?.username || user.email?.split('@')[0] || 'collector'
+  const name = displayName || user.user_metadata?.display_name || user.email?.split('@')[0] || 'Collector'
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
   const [avatarErr, setAvatarErr] = useState('')
   const avatarInputRef = useRef(null)
@@ -1688,7 +1688,7 @@ function ProfileScreen({ user, collection, onSignOut, isAdmin, pendingReports = 
             <div onClick={() => !uploadingAvatar && avatarInputRef.current?.click()} style={{ position: 'relative', width: 64, height: 64, cursor: 'pointer', flexShrink: 0 }}>
               {avatarUrl
                 ? <img src={avatarUrl} alt="" style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover' }} />
-                : <Av ini={username.slice(0, 2).toUpperCase()} bg={C.purpleBg} tc={C.purple} size={64} />}
+                : <Av ini={name.slice(0, 2).toUpperCase()} bg={C.purpleBg} tc={C.purple} size={64} />}
               <div style={{ position: 'absolute', bottom: -2, right: -2, width: 24, height: 24, borderRadius: '50%', background: C.dark, border: '2px solid #fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <i className="ti ti-camera" style={{ fontSize: 12, color: '#fff' }} />
               </div>
@@ -1702,7 +1702,7 @@ function ProfileScreen({ user, collection, onSignOut, isAdmin, pendingReports = 
           </div>
           <input ref={avatarInputRef} type="file" accept="image/*" onChange={pickAvatar} style={{ display: 'none' }} />
           <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-          <div style={{ fontSize: 18, fontWeight: 700, color: C.text, letterSpacing: '-.3px', marginBottom: 2 }}>{username}</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: C.text, letterSpacing: '-.3px', marginBottom: 2 }}>{name}</div>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: avatarErr ? 6 : 14 }}>{user.email}</div>
           {avatarErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, lineHeight: 1.4 }}>{avatarErr}</div>}
 
@@ -1726,12 +1726,12 @@ function ProfileScreen({ user, collection, onSignOut, isAdmin, pendingReports = 
             ) : (
               following.map(f => (
                 <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `0.5px solid ${C.border}` }}>
-                  <div onClick={() => onViewCollector?.({ id: f.id, username: f.username, avatar_url: f.avatar_url, isFollowing: true })} style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, cursor: 'pointer' }}>
+                  <div onClick={() => onViewCollector?.({ id: f.id, display_name: f.display_name || f.username, avatar_url: f.avatar_url, isFollowing: true })} style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, cursor: 'pointer' }}>
                     {f.avatar_url
                       ? <img src={f.avatar_url} alt="" style={{ width: 34, height: 34, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-                      : <div style={{ width: 34, height: 34, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(f.username || '?').slice(0, 2).toUpperCase()}</div>}
+                      : <div style={{ width: 34, height: 34, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(f.display_name || f.username || '?').slice(0, 2).toUpperCase()}</div>}
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.username}</div>
+                      <div style={{ fontSize: 13.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.display_name || f.username}</div>
                       <div style={{ fontSize: 11, color: C.muted }}>{f.matchbooks} {f.matchbooks === 1 ? 'matchbook' : 'matchbooks'}</div>
                     </div>
                   </div>
@@ -1801,7 +1801,7 @@ function ProfileScreen({ user, collection, onSignOut, isAdmin, pendingReports = 
 }
 
 // ─── INVITE SCREEN ───────────────────────────────────────
-// PWA invite: a personal link ({origin}/?invite=<username>) + the native share
+// PWA invite: a personal link ({origin}/?invite=<user.id>) + the native share
 // sheet (Web Share, works on iOS Safari/PWA). Contacts + "who's on the app"
 // matching is the native-app milestone, not this.
 function InviteScreen({ user, onBack }) {
@@ -1924,7 +1924,7 @@ function FindCollectors({ onFollow, onUnfollow, onView, onBack }) {
         <div style={{ fontSize: 24, fontWeight: 800, color: C.text, letterSpacing: '-.5px', margin: '6px 0 12px' }}>Find collectors</div>
         <div style={{ position: 'relative', marginBottom: 12 }}>
           <i className="ti ti-search" style={{ position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)', fontSize: 15, color: C.muted }} />
-          <input value={q} onChange={e => onChange(e.target.value)} placeholder="Search by username" autoFocus
+          <input value={q} onChange={e => onChange(e.target.value)} placeholder="Search by name" autoFocus
             style={{ width: '100%', padding: '12px 12px 12px 40px', border: `1.5px solid ${q ? C.dark : C.border}`, borderRadius: 13, background: C.card, color: C.text, fontSize: 14, fontWeight: 500, outline: 'none' }} />
           {searching && <div style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, borderRadius: '50%', border: `2px solid ${C.border}`, borderTop: `2px solid ${C.dark}`, animation: 'spin 1s linear infinite' }} />}
         </div>
@@ -1935,12 +1935,12 @@ function FindCollectors({ onFollow, onUnfollow, onView, onBack }) {
       <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 24px' }}>
         {results.map(r => (
           <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '10px 0', borderBottom: `0.5px solid ${C.border}` }}>
-            <div onClick={() => onView?.({ id: r.id, username: r.username, avatar_url: r.avatar_url, isFollowing: r.is_following })} style={{ display: 'flex', alignItems: 'center', gap: 11, flex: 1, minWidth: 0, cursor: 'pointer' }}>
+            <div onClick={() => onView?.({ id: r.id, display_name: r.display_name || r.username, avatar_url: r.avatar_url, isFollowing: r.is_following })} style={{ display: 'flex', alignItems: 'center', gap: 11, flex: 1, minWidth: 0, cursor: 'pointer' }}>
               {r.avatar_url
                 ? <img src={r.avatar_url} alt="" style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-                : <div style={{ width: 38, height: 38, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(r.username || '?').slice(0, 2).toUpperCase()}</div>}
+                : <div style={{ width: 38, height: 38, borderRadius: '50%', background: C.purpleBg, color: C.purple, fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{(r.display_name || r.username || '?').slice(0, 2).toUpperCase()}</div>}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.username}</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.display_name || r.username}</div>
                 <div style={{ fontSize: 11, color: C.muted }}>{r.matchbooks} {r.matchbooks === 1 ? 'matchbook' : 'matchbooks'}</div>
               </div>
             </div>
@@ -1954,7 +1954,7 @@ function FindCollectors({ onFollow, onUnfollow, onView, onBack }) {
           <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: C.muted, fontSize: 13 }}>No collectors match “{q.trim()}”.</div>
         )}
         {q.trim().length === 0 && (
-          <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: C.muted, fontSize: 13, lineHeight: 1.6 }}>Search a username to follow other collectors and compare lists.</div>
+          <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: C.muted, fontSize: 13, lineHeight: 1.6 }}>Search a name to follow other collectors and compare lists.</div>
         )}
       </div>
     </div>
@@ -2008,9 +2008,9 @@ function CollectorProfile({ collector, isFollowing, onFollow, onUnfollow, onBack
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 18 }}>
           {collector.avatar_url
             ? <img src={collector.avatar_url} alt="" style={{ width: 60, height: 60, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-            : <Av ini={(collector.username || '?').slice(0, 2).toUpperCase()} bg={C.purpleBg} tc={C.purple} size={60} />}
+            : <Av ini={(collector.display_name || '?').slice(0, 2).toUpperCase()} bg={C.purpleBg} tc={C.purple} size={60} />}
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 19, fontWeight: 800, color: C.text, letterSpacing: '-.4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{collector.username}</div>
+            <div style={{ fontSize: 19, fontWeight: 800, color: C.text, letterSpacing: '-.4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{collector.display_name}</div>
             <div style={{ fontSize: 12.5, color: C.muted, marginTop: 1 }}>
               {following ? `${ranked.length} ranked${cities ? ` · ${cities} ${cities === 1 ? 'city' : 'cities'}` : ''}` : 'Follow to see their collection'}
             </div>
@@ -2027,10 +2027,10 @@ function CollectorProfile({ collector, isFollowing, onFollow, onUnfollow, onBack
           <div style={{ textAlign: 'center', padding: '3rem 1.5rem' }}>
             <i className="ti ti-lock" style={{ fontSize: 34, color: C.borderStr }} />
             <div style={{ fontSize: 15, fontWeight: 700, color: C.text, margin: '12px 0 6px' }}>Followers only</div>
-            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>Follow {collector.username} to see their ranked matchbooks.</div>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>Follow {collector.display_name} to see their ranked matchbooks.</div>
           </div>
         ) : ranked.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '3rem 1.5rem', color: C.muted, fontSize: 13 }}>{collector.username} hasn't ranked anything yet.</div>
+          <div style={{ textAlign: 'center', padding: '3rem 1.5rem', color: C.muted, fontSize: 13 }}>{collector.display_name} hasn't ranked anything yet.</div>
         ) : (
           <div>
             {ranked.map(item => (
@@ -2059,7 +2059,7 @@ function CollectorProfile({ collector, isFollowing, onFollow, onUnfollow, onBack
 // collector's copy + score). Reject → mark resolved, venue untouched.
 function AdminQueue({ reports, venues, onAccept, onReject, onBack }) {
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
-  const [names, setNames] = useState({}) // user id → username (best-effort, admin read)
+  const [names, setNames] = useState({}) // user id → display_name (best-effort, admin read)
   const [busyId, setBusyId] = useState(null)
   const [actionErr, setActionErr] = useState('')
 
@@ -2067,17 +2067,17 @@ function AdminQueue({ reports, venues, onAccept, onReject, onBack }) {
   // array. Never drop a report — keep the queue count in sync with the badge.
   const enriched = reports.map(r => ({ ...r, venue: r.venue || venueMap[r.venue_id] }))
 
-  // Resolve submitter + reporter usernames (needs migration 008's admin-read on
+  // Resolve submitter + reporter names (needs migration 008's admin-read on
   // profiles; degrades to "a collector" if absent).
   useEffect(() => {
     const ids = [...new Set(enriched.flatMap(r => [r.reporter_id, r.venue?.created_by]).filter(Boolean))]
     if (!ids.length) return
-    supabase.from('profiles').select('id, username').in('id', ids).then(({ data }) => {
-      if (data) setNames(Object.fromEntries(data.map(p => [p.id, p.username])))
+    supabase.from('profiles').select('id, display_name').in('id', ids).then(({ data }) => {
+      if (data) setNames(Object.fromEntries(data.map(p => [p.id, p.display_name])))
     })
   }, [reports]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const uname = (id) => (id && names[id]) ? '@' + names[id] : 'a collector'
+  const uname = (id) => (id && names[id]) ? names[id] : 'a collector'
 
   const accept = async (r) => { setBusyId(r.id); setActionErr(''); const ok = await onAccept(r.venue_id, r.id); setBusyId(null); if (ok === false) setActionErr('Couldn’t remove that venue — try again.') }
   const reject = async (r) => { setBusyId(r.id); setActionErr(''); const ok = await onReject(r.id); setBusyId(null); if (ok === false) setActionErr('Couldn’t reject that report — try again.') }
@@ -2149,7 +2149,7 @@ function AuthScreen({ onDone }) {
   const [mode, setMode] = useState('signup') // signup | login | reset
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [username, setUsername] = useState('')
+  const [name, setName] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -2169,10 +2169,12 @@ function AuthScreen({ onDone }) {
         return
       }
       if (mode === 'signup') {
+        const cleanName = name.trim()
+        if (!cleanName) { setError('Please enter your name.'); setLoading(false); return }
         const { data, error } = await supabase.auth.signUp({
           email,
           password,
-          options: { data: { username: username || email.split('@')[0] } },
+          options: { data: { display_name: cleanName } },
         })
         if (error) throw error
         // When email confirmation is required, signUp returns no session and the
@@ -2223,7 +2225,7 @@ function AuthScreen({ onDone }) {
         </div>
 
         {mode === 'signup' && (
-          <input value={username} onChange={e => setUsername(e.target.value)} placeholder="Username" style={inputStyle} />
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Your name" maxLength={80} style={inputStyle} />
         )}
         <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" type="email" style={inputStyle} />
         {mode !== 'reset' && (
@@ -2239,7 +2241,7 @@ function AuthScreen({ onDone }) {
         {notice && <div style={{ color: '#6ACBAB', fontSize: 12, marginBottom: 12, lineHeight: 1.4 }}>{notice}</div>}
         {error && <div style={{ color: '#F08080', fontSize: 12, marginBottom: 12, lineHeight: 1.4 }}>{error}</div>}
 
-        <button onClick={handleSubmit} disabled={loading || !email || (mode !== 'reset' && !password)}
+        <button onClick={handleSubmit} disabled={loading || !email || (mode !== 'reset' && !password) || (mode === 'signup' && !name.trim())}
           style={{ width: '100%', padding: 15, background: loading ? 'rgba(200,123,10,0.5)' : '#C87B0A', color: '#fff', border: 'none', borderRadius: 13, fontSize: 15, fontWeight: 700, cursor: loading ? 'default' : 'pointer', letterSpacing: '-.2px', marginTop: 4, marginBottom: 14, boxShadow: '0 2px 12px rgba(200,123,10,0.35)' }}>
           {loading ? 'Please wait…' : mode === 'signup' ? 'Create account' : mode === 'reset' ? 'Send reset link' : 'Sign in'}
         </button>
@@ -2317,6 +2319,65 @@ function ResetPassword({ onDone }) {
   )
 }
 
+// ─── ADD YOUR NAME (existing-user migration) ─────────────
+// One-time prompt for accounts created before real names existed (display_name
+// blank or still equal to the old auto handle). Writes profiles.display_name so
+// the name-search can find them. Not skippable — a name is now required to be a
+// findable member, and it's a single field.
+function NamePrompt({ user, onSaved }) {
+  const [name, setName] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const submit = async () => {
+    const clean = name.trim()
+    if (!clean) { setError('Please enter your name.'); return }
+    setSaving(true)
+    setError('')
+    // profiles.display_name feeds the search/following RPCs; auth metadata is the
+    // durable "has set a name" signal that stops this prompt re-appearing. Require
+    // BOTH to land before dismissing, so a failed metadata write can't strand the
+    // user in a re-prompt loop next login.
+    const { error: e1 } = await supabase.from('profiles').update({ display_name: clean }).eq('id', user.id)
+    if (e1) { setSaving(false); setError('Couldn’t save that — check your connection and try again.'); return }
+    const { error: e2 } = await supabase.auth.updateUser({ data: { display_name: clean } })
+    setSaving(false)
+    if (e2) { setError('Couldn’t save that — check your connection and try again.'); return }
+    onSaved(clean)
+  }
+
+  const inputStyle = {
+    display: 'block', width: '100%', padding: '13px 14px',
+    border: `1.5px solid rgba(255,255,255,0.14)`, borderRadius: 13,
+    background: 'rgba(255,255,255,0.07)', color: '#fff', fontSize: 14,
+    fontWeight: 500, marginBottom: 10, outline: 'none',
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#1A1918' }}>
+      <div style={{ paddingTop: 'max(12px, env(safe-area-inset-top))', flexShrink: 0 }} />
+      <div style={{ flex: 1, padding: '24px 24px 0', overflowY: 'auto' }}>
+        <div style={{ marginBottom: 28, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+          <MbIcon size={60} />
+          <div style={{ fontFamily: 'Georgia, serif', fontSize: 24, fontWeight: 300, color: '#fff', letterSpacing: '-.4px' }}>phillumeni</div>
+        </div>
+        <div style={{ fontSize: 20, fontWeight: 700, color: '#fff', letterSpacing: '-.4px', marginBottom: 4 }}>What's your name?</div>
+        <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', marginBottom: 22, lineHeight: 1.5 }}>We switched from usernames to real names so friends can actually find you. This is how you'll show up.</div>
+
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="Your name" maxLength={80} autoFocus style={inputStyle}
+          onKeyDown={e => { if (e.key === 'Enter') submit() }} />
+
+        {error && <div style={{ color: '#F08080', fontSize: 12, marginBottom: 12, lineHeight: 1.4 }}>{error}</div>}
+
+        <button onClick={submit} disabled={saving || !name.trim()}
+          style={{ width: '100%', padding: 15, background: saving ? 'rgba(200,123,10,0.5)' : '#C87B0A', color: '#fff', border: 'none', borderRadius: 13, fontSize: 15, fontWeight: 700, cursor: saving ? 'default' : 'pointer', letterSpacing: '-.2px', marginTop: 4, boxShadow: '0 2px 12px rgba(200,123,10,0.35)' }}>
+          {saving ? 'Saving…' : 'Continue'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ─── TAB BAR ─────────────────────────────────────────────
 function TabBar({ active, onNav }) {
   const tabs = [
@@ -2353,13 +2414,15 @@ export default function App() {
   const [venuesError, setVenuesError] = useState(false)
   const [isAdmin, setIsAdmin] = useState(false)
   const [myAvatar, setMyAvatar] = useState(null)
+  const [myName, setMyName] = useState(null) // profiles.display_name — the user's real name
+  const [showNamePrompt, setShowNamePrompt] = useState(false) // existing user with no real name yet
   const [fakeReports, setFakeReports] = useState([]) // pending fake_reports (admin only)
   const [showAdmin, setShowAdmin] = useState(false)
   const [showInvite, setShowInvite] = useState(false)
   const [showFind, setShowFind] = useState(false)
-  const [viewingCollector, setViewingCollector] = useState(null) // { id, username, avatar_url, isFollowing }
+  const [viewingCollector, setViewingCollector] = useState(null) // { id, display_name, avatar_url, isFollowing }
   const [reRankTarget, setReRankTarget] = useState(null) // { venue, photo, score } — re-ranking a spot via head-to-heads
-  const [following, setFollowing] = useState([]) // [{ id, username, avatar_url, matchbooks }]
+  const [following, setFollowing] = useState([]) // [{ id, display_name, avatar_url, matchbooks }]
   const [sheetOpen, setSheetOpen] = useState(false) // a bottom sheet is open → hide TabBar
 
   // Auth state
@@ -2383,7 +2446,7 @@ export default function App() {
     return () => subscription.unsubscribe()
   }, [])
 
-  // Capture an inbound invite link (?invite=<username>) once, stash it, and clean
+  // Capture an inbound invite link (?invite=<user.id>) once, stash it, and clean
   // the URL so it isn't re-shared. Attribution happens after the user authenticates.
   useEffect(() => {
     try {
@@ -2452,16 +2515,24 @@ export default function App() {
   // Load my profile flags (admin + avatar). Own profile is readable under the
   // owner-only SELECT policy. Tolerates avatar_url being unmigrated (pre-015).
   useEffect(() => {
-    if (!user) { setIsAdmin(false); setMyAvatar(null); return }
+    if (!user) { setIsAdmin(false); setMyAvatar(null); setMyName(null); return }
+    // Existing users predate real names: they signed up before the name field, so
+    // their auth metadata has no display_name (the old form set `username`). New
+    // signups always carry display_name in metadata — so this targets ONLY legacy
+    // accounts and never false-prompts a new user whose name happens to match
+    // their email local part. NamePrompt writes display_name into metadata, so it
+    // clears for good on the next login.
+    if (!(user.user_metadata?.display_name || '').trim()) setShowNamePrompt(true)
     let cancelled = false
     ;(async () => {
-      let { data, error } = await supabase.from('profiles').select('is_admin, avatar_url').eq('id', user.id).maybeSingle()
+      let { data, error } = await supabase.from('profiles').select('is_admin, avatar_url, display_name').eq('id', user.id).maybeSingle()
       if (error && isMissingColumn(error)) {
-        ;({ data, error } = await supabase.from('profiles').select('is_admin').eq('id', user.id).maybeSingle())
+        ;({ data, error } = await supabase.from('profiles').select('is_admin, display_name').eq('id', user.id).maybeSingle())
       }
       if (cancelled || error) return
       setIsAdmin(!!data?.is_admin)
       setMyAvatar(data?.avatar_url || null)
+      setMyName((data?.display_name || '').trim() || null)
     })()
     return () => { cancelled = true }
   }, [user])
@@ -2609,6 +2680,8 @@ export default function App() {
     setReported([])
     setIsAdmin(false)
     setMyAvatar(null)
+    setMyName(null)
+    setShowNamePrompt(false)
     setFakeReports([])
     setFollowing([])
     setShowAdmin(false)
@@ -2689,6 +2762,14 @@ export default function App() {
     )
   }
 
+  if (showNamePrompt) {
+    return (
+      <div style={phoneStyle}>
+        <NamePrompt user={user} onSaved={(n) => { setMyName(n); setShowNamePrompt(false) }} />
+      </div>
+    )
+  }
+
   return (
     <div style={phoneStyle}>
       {reRankTarget ? (
@@ -2760,6 +2841,7 @@ export default function App() {
           {tab === 'profile' && (
             <ProfileScreen
               user={user}
+              displayName={myName}
               collection={enrichedCollection}
               onSignOut={handleSignOut}
               isAdmin={isAdmin}
