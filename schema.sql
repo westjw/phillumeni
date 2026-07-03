@@ -407,3 +407,45 @@ $$;
 
 revoke execute on function friends_rankings() from public, anon;
 grant execute on function friends_rankings() to authenticated;
+
+-- City & World aggregate leaderboards (migration 018): per-venue avg score across
+-- ALL collectors — city-scoped and global. SECURITY DEFINER + authenticated-only
+-- (anon revoked explicitly). Aggregate-only: no names, no per-user rows.
+create or replace function city_rankings(target_city text)
+returns table (venue_id integer, avg_score numeric, rankers integer)
+language sql
+security definer
+stable
+set search_path = ''
+as $$
+  select c.venue_id,
+         round(avg(c.score), 1) as avg_score,
+         count(*)::int as rankers
+  from public.collections c
+  join public.venues v on v.id = c.venue_id
+  where c.score is not null
+    and v.city = target_city
+  group by c.venue_id
+  order by avg_score desc, rankers desc;
+$$;
+revoke execute on function city_rankings(text) from public, anon;
+grant execute on function city_rankings(text) to authenticated;
+
+create or replace function world_rankings()
+returns table (venue_id integer, avg_score numeric, rankers integer)
+language sql
+security definer
+stable
+set search_path = ''
+as $$
+  select c.venue_id,
+         round(avg(c.score), 1) as avg_score,
+         count(*)::int as rankers
+  from public.collections c
+  where c.score is not null
+  group by c.venue_id
+  order by avg_score desc, rankers desc
+  limit 100;
+$$;
+revoke execute on function world_rankings() from public, anon;
+grant execute on function world_rankings() to authenticated;

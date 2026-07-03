@@ -58,14 +58,6 @@ async function downscaleImage(file, maxDim = 1600, quality = 0.82) {
 }
 const venueInitials = (name) => (name || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('')
 
-function eloUpdate(scoreA, scoreB, aWon) {
-  const S = 3, K = 0.5
-  const expA = 1 / (1 + Math.pow(10, (scoreB - scoreA) / S))
-  const newA = Math.min(10, Math.max(0, scoreA + K * ((aWon ? 1 : 0) - expA)))
-  const newB = Math.min(10, Math.max(0, scoreB + K * ((aWon ? 0 : 1) - (1 - expA))))
-  return [Math.round(newA * 10) / 10, Math.round(newB * 10) / 10]
-}
-
 // ─── COLORS ─────────────────────────────────────────────
 const C = {
   bg:'#FAFAF8', card:'#FFFFFF', surface:'#F4F1EC',
@@ -78,10 +70,9 @@ const C = {
   dark:'#1A1918',
 }
 
-const pinColor = (v, collected) => {
-  if (v.status === 'closed') return C.muted
-  if (collected) return C.amber   // yours — already in your collection
-  return C.green                  // out there to grab
+const pinColor = (v) => {
+  if (v.status === 'closed') return C.muted   // status distinction only
+  return C.green                              // every active spot looks the same
 }
 
 // ─── SMALL COMPONENTS ────────────────────────────────────
@@ -165,7 +156,7 @@ function styleMarkerEl(el, v, isSelected, collected) {
   const s = el.style
   s.width = s.height = `${isSelected ? 34 : 28}px`
   s.borderRadius = '50%'
-  s.background = pinColor(v, collected)
+  s.background = pinColor(v)
   s.border = `${isSelected ? '3px' : '2.5px'} solid white`
   s.cursor = 'pointer'
   s.display = 'flex'
@@ -177,7 +168,7 @@ function styleMarkerEl(el, v, isSelected, collected) {
   s.boxShadow = `0 ${isSelected ? 4 : 2}px ${isSelected ? 16 : 8}px rgba(0,0,0,${isSelected ? 0.4 : 0.25})`
   // Animate size/shadow only — NOT transform, or position changes would slide.
   s.transition = 'width .15s, height .15s, background .15s, box-shadow .15s, border .15s'
-  el.textContent = v.status === 'closed' ? '✕' : collected ? '✓' : '✦'
+  el.textContent = v.status === 'closed' ? '✕' : '✦'
 }
 
 function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVenue, filter }) {
@@ -1328,75 +1319,65 @@ function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone, initial
   const [lo, setLo] = useState(0)
   const [hi, setHi] = useState(opponents.length - 1)
   const [doneCount, setDoneCount] = useState(0)
-  // Re-rank seeds the current score so each head-to-head nudges from where the
-  // spot already sits (and a no-op / immediate skip keeps its existing score
-  // rather than resetting to a baseline). A fresh add starts at null.
-  const [newScore, setNewScore] = useState(initialScore)
-  const [liveScores, setLiveScores] = useState({})
-  const [saving, setSaving] = useState(false)
+  const [saving, setSaving] = useState(false)  // brief lock: one answer per shown matchup
   const [writeErr, setWriteErr] = useState('')
   const savingRef = useRef(false)   // synchronous re-entrancy lock (state lags a render)
-  const finishedRef = useRef(false) // guarantees onDone + baseline-write happen once
+  const finishedRef = useRef(false) // guarantees the single score write + onDone happen once
 
   const totalSteps = Math.max(1, Math.ceil(Math.log2(opponents.length + 1)))
   const mid = Math.floor((lo + hi) / 2)
   const opponent = opponents[mid]
-  const oppScore = opponent ? (liveScores[opponent.venue_id] ?? (opponent.score ?? 7.5)) : 7.5
-  const curNewScore = newScore ?? oppScore
   const finished = !opponent || lo > hi
 
-  // Finish exactly once: ensure the new venue has a persisted score, then exit.
-  // newScore is null only if the user never completed a tap — seed the baseline.
-  // finishedRef is claimed synchronously to block double-entry but RELEASED if the
-  // baseline write fails, so the venue is never orphaned at score=null with no retry.
-  const finish = useCallback(async (scoreSoFar) => {
+  // Your head-to-head choices decide the ORDER. The binary search converges to an
+  // insertion slot; the score is then INTERPOLATED between the two neighbors that
+  // bracket that slot — so the stored score is always consistent with your picks
+  // (a spot you chose over another always sorts above it), and NO existing spot is
+  // ever nudged. `insertIdx` is the slot in the score-descending opponents list.
+  // Runs exactly once; finishedRef is released on a failed write so it can retry.
+  const finishAt = useCallback(async (insertIdx) => {
     if (finishedRef.current) return
     finishedRef.current = true
-    if (scoreSoFar == null) {
-      const { error } = await supabase.from('collections')
-        .update({ score: Math.round((oppScore ?? 7.5) * 10) / 10 })
-        .eq('user_id', user.id).eq('venue_id', newVenue.id)
-      if (error) {
-        finishedRef.current = false // release so the user can retry
-        console.error('Baseline score write failed', error)
-        setWriteErr('Couldn’t save — tap again.')
-        return
-      }
+    const above = insertIdx > 0 ? opponents[insertIdx - 1]?.score : null            // higher-ranked neighbor
+    const below = insertIdx < opponents.length ? opponents[insertIdx]?.score : null // lower-ranked neighbor
+    let s
+    if (above != null && below != null) s = (above + below) / 2
+    else if (below != null) s = below + Math.min(0.3, (10 - below) / 2)             // lands #1
+    else if (above != null) s = above - Math.min(0.3, above / 2)                    // lands last
+    else s = initialScore != null ? initialScore : 7.5                             // nothing to compare against
+    // Store FULL precision (the list displays .toFixed(1)). Rounding the midpoint
+    // to 2 decimals could round it past a neighbor when spots are tightly packed,
+    // re-introducing an inversion; the exact midpoint is always strictly between.
+    s = Math.max(0, Math.min(10, s))
+    const { error } = await supabase.from('collections')
+      .update({ score: s }).eq('user_id', user.id).eq('venue_id', newVenue.id)
+    if (error) {
+      finishedRef.current = false // release so the user can retry
+      console.error('Ranking score write failed', error)
+      setWriteErr('Couldn’t save — tap again.')
+      return
     }
     onDone()
-  }, [oppScore, user.id, newVenue.id, onDone])
+  }, [opponents, initialScore, user.id, newVenue.id, onDone])
 
-  // Terminal condition (list exhausted) — run as an effect, never during render.
+  // Terminal condition (search converged / no opponents) — run as an effect. `lo`
+  // is the final insertion slot; captured fresh in the render where finished flips.
   useEffect(() => {
-    if (finished) finish(newScore)
+    if (finished) finishAt(lo)
   }, [finished]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Release the one-answer-per-matchup lock once the next matchup has rendered.
+  useEffect(() => { savingRef.current = false; setSaving(false) }, [lo, hi])
 
   if (finished) return null
 
   const oppRank = mid + 1
 
-  const pick = async (newWon) => {
+  const pick = (newWon) => {
     if (savingRef.current || finishedRef.current) return
     savingRef.current = true
     setSaving(true)
     setWriteErr('')
-    const [updNew, updOpp] = eloUpdate(curNewScore, oppScore, newWon)
-
-    // Only the two collections.score writes are required (supabase-js resolves
-    // with an { error } object rather than rejecting). On failure, do NOT advance
-    // the search or mutate score state — surface an error and let the user retry.
-    const results = await Promise.all([
-      supabase.from('collections').update({ score: updNew }).eq('user_id', user.id).eq('venue_id', newVenue.id),
-      supabase.from('collections').update({ score: updOpp }).eq('user_id', user.id).eq('venue_id', opponent.venue_id),
-    ])
-    const failed = results.find(r => r && r.error)
-    savingRef.current = false
-    setSaving(false)
-    if (failed) {
-      console.error('Comparison write failed', failed.error)
-      setWriteErr('Couldn’t save that — check your connection and tap again.')
-      return
-    }
 
     // The comparisons audit log is OPTIONAL (spec §3) — best-effort, fire-and-forget
     // so a missing/unmigrated comparisons table can never block ranking.
@@ -1406,18 +1387,16 @@ function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone, initial
       loser_venue_id: newWon ? opponent.venue_id : newVenue.id,
     }).then(({ error }) => { if (error) console.warn('comparisons log skipped:', error.message) })
 
-    setNewScore(updNew)
-    setLiveScores(prev => ({ ...prev, [opponent.venue_id]: updOpp }))
     setDoneCount(n => n + 1)
-
-    const newLo = newWon ? lo : mid + 1
-    const newHi = newWon ? mid - 1 : hi
-    if (newLo > newHi) { finish(updNew); return } // already scored — won't re-write
-    setLo(newLo)
-    setHi(newHi)
+    // Descending list: a WIN moves the new spot toward the top (search the upper
+    // half), a LOSS toward the bottom. finishAt fires from the [finished] effect
+    // once the slot collapses (newLo > newHi). No DB write per tap; no venue moves.
+    setLo(newWon ? lo : mid + 1)
+    setHi(newWon ? mid - 1 : hi)
   }
 
-  const skip = () => { if (!savingRef.current) finish(newScore) }
+  // "Too close to call": place the spot adjacent to the current matchup opponent.
+  const skip = () => { if (!savingRef.current && !finishedRef.current) finishAt(mid) }
 
   const newIni = venueInitials(newVenue.name)
   const oppIni = venueInitials(opponent.venue?.name || '')
@@ -1464,7 +1443,7 @@ function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone, initial
         <button onClick={skip} disabled={saving} style={{ background: 'none', border: 'none', fontSize: 14, color: C.muted, cursor: saving ? 'default' : 'pointer', textDecoration: 'underline', marginBottom: 10 }}>
           Too close to call — skip
         </button>
-        <div style={{ fontSize: 11, color: C.muted, textAlign: 'center', lineHeight: 1.5 }}>Each tap also runs an Elo score update on both venues</div>
+        <div style={{ fontSize: 11, color: C.muted, textAlign: 'center', lineHeight: 1.5 }}>Your picks set the order — there's no wrong answer</div>
       </div>
     </div>
   )
@@ -1541,6 +1520,43 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onSheetO
     .filter(r => r.venue)
     .map((r, idx) => ({ ...r, rank: idx + 1 }))
 
+  // Cities to switch between = the real cities present in the venue set, busiest
+  // first (so New York, where most spots are, is the default).
+  const cityList = useMemo(() => {
+    const counts = {}
+    venues.forEach(v => { if (v.city) counts[v.city] = (counts[v.city] || 0) + 1 })
+    return Object.keys(counts).sort((a, b) => counts[b] - counts[a])
+  }, [venues])
+  const [cityChoice, setCityChoice] = useState('')
+  useEffect(() => { if (!cityChoice && cityList.length) setCityChoice(cityList[0]) }, [cityList, cityChoice])
+
+  // City rankings: per-venue avg score across ALL collectors, filtered to the
+  // chosen city (city_rankings RPC, sorted best-first). World: same, globally.
+  const [cityRows, setCityRows] = useState(null)
+  useEffect(() => {
+    if (tab !== 'city' || !cityChoice) return
+    let cancelled = false
+    setCityRows(null)
+    supabase.rpc('city_rankings', { target_city: cityChoice }).then(({ data, error }) => {
+      if (!cancelled) setCityRows(error ? [] : (data || []))
+    })
+    return () => { cancelled = true }
+  }, [tab, cityChoice])
+
+  const [worldRows, setWorldRows] = useState(null)
+  useEffect(() => {
+    if (tab !== 'world') return
+    let cancelled = false
+    setWorldRows(null)
+    supabase.rpc('world_rankings').then(({ data, error }) => {
+      if (!cancelled) setWorldRows(error ? [] : (data || []))
+    })
+    return () => { cancelled = true }
+  }, [tab])
+
+  const cityRanked = (cityRows || []).map(r => ({ ...r, venue: venueMap[r.venue_id] })).filter(r => r.venue).map((r, idx) => ({ ...r, rank: idx + 1 }))
+  const worldRanked = (worldRows || []).map(r => ({ ...r, venue: venueMap[r.venue_id] })).filter(r => r.venue).map((r, idx) => ({ ...r, rank: idx + 1 }))
+
   // Pale medal fills with dark, hue-matched digits (matches the mockup).
   const rankCircle = (n) => ({
     width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -1548,6 +1564,28 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onSheetO
     background: n === 1 ? '#F5E0A8' : n === 2 ? '#E2E2E2' : n === 3 ? '#E8C2A0' : C.surface,
     color: n === 1 ? '#7A5A0A' : n === 2 ? '#737373' : n === 3 ? '#7A4A1A' : C.muted,
   })
+
+  // Shared renderer for the aggregate tabs (Friends / City / World) — identical
+  // rows, only the subtitle differs.
+  const aggList = (rows, subtitle) => (
+    <div style={{ padding: '4px 16px' }}>
+      {rows.map(item => (
+        <div key={item.venue_id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}` }}>
+          <div style={rankCircle(item.rank)}>{item.rank}</div>
+          <div style={{ width: 42, height: 42, borderRadius: 11, background: item.venue.bg_color || C.dark, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0, letterSpacing: '-.2px' }}>
+            {venueInitials(item.venue.name)}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
+            <div style={{ fontSize: 12, color: C.muted }}>{subtitle(item)}</div>
+          </div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: C.amber, flexShrink: 0 }}>{Number(item.avg_score).toFixed(1)}</div>
+        </div>
+      ))}
+      <div style={{ height: 24 }} />
+    </div>
+  )
+  const collectorsLabel = (n) => `${n} ${n === 1 ? 'collector' : 'collectors'}`
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}>
@@ -1592,8 +1630,9 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onSheetO
             </div>
           )
         ) : tab === 'friends' ? (
-          (friendsRows === null || (friendsRows.length > 0 && friendsRanked.length === 0)) ? (
-            // null = still loading; rows present but unresolved = venues not loaded yet
+          (friendsRows === null) ? (
+            // Only a null (not-yet-fetched) state is "loading"; a returned-but-
+            // unresolvable row set falls through to the empty state, never hangs.
             <div style={{ textAlign: 'center', padding: '4rem 1.5rem', color: C.muted, fontSize: 13 }}>Loading…</div>
           ) : friendsRanked.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
@@ -1602,31 +1641,46 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onSheetO
               <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>Follow collectors from your Profile — once they've ranked spots, your friends' combined list shows here.</div>
             </div>
           ) : (
-            <div style={{ padding: '4px 16px' }}>
-              {friendsRanked.map(item => (
-                <div key={item.venue_id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}` }}>
-                  <div style={rankCircle(item.rank)}>{item.rank}</div>
-                  <div style={{ width: 42, height: 42, borderRadius: 11, background: item.venue.bg_color || C.dark, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0, letterSpacing: '-.2px' }}>
-                    {venueInitials(item.venue.name)}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
-                    <div style={{ fontSize: 12, color: C.muted }}>
-                      {item.venue.neighborhood || item.venue.city} · {item.rankers} {item.rankers === 1 ? 'friend' : 'friends'}
-                    </div>
-                  </div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: C.amber, flexShrink: 0 }}>{Number(item.avg_score).toFixed(1)}</div>
-                </div>
-              ))}
-              <div style={{ height: 24 }} />
-            </div>
+            aggList(friendsRanked, item => `${item.venue.neighborhood || item.venue.city} · ${item.rankers} ${item.rankers === 1 ? 'friend' : 'friends'}`)
           )
+        ) : tab === 'city' ? (
+          <>
+            <div style={{ padding: '10px 16px 4px', flexShrink: 0 }}>
+              <div style={{ position: 'relative' }}>
+                <select value={cityChoice} onChange={e => setCityChoice(e.target.value)}
+                  style={{ width: '100%', padding: '11px 14px', border: `1.5px solid ${C.amberBd}`, borderRadius: 12, background: C.amberBg, color: C.amber, fontSize: 14, fontWeight: 700, appearance: 'none', WebkitAppearance: 'none', cursor: 'pointer', outline: 'none' }}>
+                  {cityList.length === 0 && <option value="">No cities yet</option>}
+                  {cityList.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <i className="ti ti-chevron-down" style={{ position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', color: C.amber, fontSize: 16, pointerEvents: 'none' }} />
+              </div>
+            </div>
+            {cityList.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '3rem 1.5rem', color: C.muted, fontSize: 13 }}>No cities on the map yet.</div>
+            ) : (cityRows === null) ? (
+              <div style={{ textAlign: 'center', padding: '3rem 1.5rem', color: C.muted, fontSize: 13 }}>Loading…</div>
+            ) : cityRanked.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '3rem 1.5rem' }}>
+                <div style={{ fontSize: 40, marginBottom: 12 }}>📍</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>Nothing ranked in {cityChoice} yet</div>
+                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>Be the first — rank a spot here and it tops the city board.</div>
+              </div>
+            ) : (
+              aggList(cityRanked, item => `${item.venue.neighborhood || item.venue.city} · ${collectorsLabel(item.rankers)}`)
+            )}
+          </>
         ) : (
-          <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>🔜</div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>Coming soon</div>
-            <div style={{ fontSize: 13, color: C.muted }}>City and World rankings open up as more people collect</div>
-          </div>
+          (worldRows === null) ? (
+            <div style={{ textAlign: 'center', padding: '4rem 1.5rem', color: C.muted, fontSize: 13 }}>Loading…</div>
+          ) : worldRanked.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>🌎</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>No world rankings yet</div>
+              <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>Once collectors start ranking spots, the best places everywhere show up here.</div>
+            </div>
+          ) : (
+            aggList(worldRanked, item => `${item.venue.city || item.venue.neighborhood} · ${collectorsLabel(item.rankers)}`)
+          )
         )}
       </div>
 
