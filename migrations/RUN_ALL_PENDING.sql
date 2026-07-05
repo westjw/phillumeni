@@ -505,4 +505,32 @@ $$;
 revoke execute on function public.world_rankings() from public, anon;
 grant execute on function public.world_rankings() to authenticated;
 
+-- ── 019_delete_account.sql ──
+-- Migration 019 — self-service account deletion (App Store req 5.1.1(v)). Erases
+-- ONLY the caller's account/data (auth.uid()); venues.created_by/fake_reports
+-- .resolved_by are nulled first (non-cascade FKs would block the delete + venues
+-- are shared), then the user's storage files, then auth.users (cascades the rest).
+create or replace function public.delete_my_account()
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  uid uuid := auth.uid();
+begin
+  if uid is null then
+    raise exception 'not authenticated';
+  end if;
+  update public.venues set created_by = null where created_by = uid;
+  update public.fake_reports set resolved_by = null where resolved_by = uid;
+  delete from storage.objects
+  where bucket_id = 'matchbooks'
+    and (storage.foldername(name))[1] = uid::text;
+  delete from auth.users where id = uid;
+end;
+$$;
+revoke execute on function public.delete_my_account() from public, anon;
+grant execute on function public.delete_my_account() to authenticated;
+
 update public.profiles set is_admin = true where id = (select id from auth.users where email = 'wyethwest@gmail.com');

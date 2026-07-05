@@ -1706,7 +1706,25 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onSheetO
 }
 
 // ─── PROFILE SCREEN ──────────────────────────────────────
-function ProfileScreen({ user, displayName, collection, onSignOut, isAdmin, pendingReports = 0, onOpenAdmin, onOpenInvite, following = [], onUnfollow, onOpenFind, onViewCollector, avatarUrl, onAvatarChange }) {
+function ProfileScreen({ user, displayName, collection, onSignOut, onDeleteAccount, isAdmin, pendingReports = 0, onOpenAdmin, onOpenInvite, following = [], onUnfollow, onOpenFind, onViewCollector, avatarUrl, onAvatarChange, onSheetOpenChange }) {
+  const [confirmDelete, setConfirmDelete] = useState(false) // delete-account confirm sheet open
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const [deleteErr, setDeleteErr] = useState('')
+
+  useEffect(() => {
+    onSheetOpenChange?.(confirmDelete)
+    return () => onSheetOpenChange?.(false)
+  }, [confirmDelete]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const runDelete = async () => {
+    setDeleting(true)
+    setDeleteErr('')
+    const err = await onDeleteAccount?.()
+    // On success the app signs out and unmounts this screen; only reached on error.
+    setDeleting(false)
+    if (err) setDeleteErr('Couldn’t delete your account — check your connection and try again.')
+  }
   const byCity = Object.entries(collection.filter(i => i.venue).reduce((m, i) => {
     const c = i.venue.city || 'Unknown'; m[c] = (m[c] || 0) + 1; return m
   }, {})).sort((a, b) => b[1] - a[1])
@@ -1852,8 +1870,38 @@ function ProfileScreen({ user, displayName, collection, onSignOut, isAdmin, pend
             ))}
           </div>
         )}
+
+        <div style={{ padding: '22px 16px 8px', textAlign: 'center' }}>
+          <a href="/privacy.html" target="_blank" rel="noopener noreferrer" style={{ fontSize: 12.5, color: C.muted, textDecoration: 'underline' }}>Privacy Policy</a>
+          <button onClick={() => { setDeleteErr(''); setDeleteConfirmText(''); setConfirmDelete(true) }}
+            style={{ display: 'block', margin: '16px auto 0', background: 'none', border: 'none', padding: 4, color: C.red, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            Delete account
+          </button>
+        </div>
         <div style={{ height: 24 }} />
       </div>
+
+      {confirmDelete && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 40, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={() => !deleting && setConfirmDelete(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+          <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px calc(24px + env(safe-area-inset-bottom))', boxShadow: '0 -6px 24px rgba(0,0,0,0.18)' }}>
+            <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
+            <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 8 }}>Delete your account?</div>
+            <div style={{ fontSize: 13.5, color: C.sec, lineHeight: 1.6, marginBottom: 16 }}>
+              This permanently erases your profile, your whole collection and rankings, your follows, and the photos you uploaded. <span style={{ color: C.text, fontWeight: 700 }}>It can't be undone.</span>
+            </div>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Type <span style={{ fontWeight: 800, color: C.text }}>DELETE</span> to confirm.</div>
+            <input value={deleteConfirmText} onChange={e => setDeleteConfirmText(e.target.value)} placeholder="DELETE" autoCapitalize="characters" autoCorrect="off"
+              style={{ width: '100%', padding: '12px 14px', border: `1.5px solid ${C.border}`, borderRadius: 12, background: C.card, color: C.text, fontSize: 15, fontWeight: 700, outline: 'none', marginBottom: 14, letterSpacing: '1.5px' }} />
+            {deleteErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, lineHeight: 1.4 }}>{deleteErr}</div>}
+            <button onClick={runDelete} disabled={deleting || deleteConfirmText.trim().toUpperCase() !== 'DELETE'}
+              style={{ width: '100%', padding: 14, background: (deleting || deleteConfirmText.trim().toUpperCase() !== 'DELETE') ? '#E7A7A7' : C.red, color: '#fff', border: 'none', borderRadius: 13, fontSize: 15, fontWeight: 700, cursor: (deleting || deleteConfirmText.trim().toUpperCase() !== 'DELETE') ? 'default' : 'pointer', marginBottom: 6 }}>
+              {deleting ? 'Deleting…' : 'Permanently delete my account'}
+            </button>
+            <button onClick={() => !deleting && setConfirmDelete(false)} disabled={deleting} style={{ width: '100%', padding: 12, background: 'none', border: 'none', color: C.muted, fontSize: 15, fontWeight: 600, cursor: deleting ? 'default' : 'pointer' }}>Cancel</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -2732,6 +2780,16 @@ export default function App() {
     }
   }
 
+  // Permanently delete the account + all data (App Store requirement). The RPC
+  // erases everything server-side; on success we tear down the local session the
+  // same way sign-out does. Returns an error to the caller to surface, or null.
+  const handleDeleteAccount = async () => {
+    const { error } = await supabase.rpc('delete_my_account')
+    if (error) { console.error('Account deletion failed', error); return error }
+    await handleSignOut()
+    return null
+  }
+
   const handleSignOut = async () => {
     await supabase.auth.signOut()
     setCollection([])
@@ -2910,6 +2968,7 @@ export default function App() {
               displayName={myName}
               collection={enrichedCollection}
               onSignOut={handleSignOut}
+              onDeleteAccount={handleDeleteAccount}
               isAdmin={isAdmin}
               pendingReports={fakeReports.length}
               onOpenAdmin={() => setShowAdmin(true)}
@@ -2920,6 +2979,7 @@ export default function App() {
               onViewCollector={setViewingCollector}
               avatarUrl={myAvatar}
               onAvatarChange={setMyAvatar}
+              onSheetOpenChange={setSheetOpen}
             />
           )}
         </>

@@ -449,3 +449,30 @@ as $$
 $$;
 revoke execute on function world_rankings() from public, anon;
 grant execute on function world_rankings() to authenticated;
+
+-- Self-service account deletion (migration 019): a signed-in user erases their
+-- OWN account + data. Nulls the non-cascade FKs (venues.created_by,
+-- fake_reports.resolved_by) so the delete isn't blocked + shared venues survive,
+-- removes their storage files, then deletes auth.users (cascades everything else).
+create or replace function delete_my_account()
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  uid uuid := auth.uid();
+begin
+  if uid is null then
+    raise exception 'not authenticated';
+  end if;
+  update public.venues set created_by = null where created_by = uid;
+  update public.fake_reports set resolved_by = null where resolved_by = uid;
+  delete from storage.objects
+  where bucket_id = 'matchbooks'
+    and (storage.foldername(name))[1] = uid::text;
+  delete from auth.users where id = uid;
+end;
+$$;
+revoke execute on function delete_my_account() from public, anon;
+grant execute on function delete_my_account() to authenticated;
