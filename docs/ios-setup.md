@@ -9,23 +9,19 @@ account. Do the steps in order.
 
 ## 1. Install the toolchain (one-time, do this first — Xcode is a big download)
 
-1. **Xcode** — install from the **Mac App Store** (~7 GB). Open it once so it finishes
-   installing components, and accept the license.
+1. **Xcode** — install from the **Mac App Store**:
+   https://apps.apple.com/us/app/xcode/id497799835 (~7 GB; Capacitor 8 needs Xcode 26+).
+   Open it once after installing so it finishes setting up components, and accept the
+   license when prompted.
 2. Point the command-line tools at Xcode (not the standalone CLT):
    ```
    sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
    ```
-3. **CocoaPods** (Capacitor uses it to manage native dependencies):
-   ```
-   sudo gem install cocoapods
-   ```
-   *(If that's slow or errors on newer macOS, `brew install cocoapods` also works once
-   Homebrew is installed.)*
+   *(No CocoaPods needed — Capacitor 8 uses Swift Package Manager, built into Xcode.)*
 
 Verify:
 ```
 xcodebuild -version
-pod --version
 ```
 
 ---
@@ -35,7 +31,7 @@ pod --version
 From the repo root (`~/Downloads/phillumeni`):
 ```
 npm run build          # build the web assets into dist/
-npx cap add ios        # creates the ios/ Xcode project + runs pod install
+npx cap add ios        # creates the ios/ Xcode project (SPM-based)
 npx cap sync ios       # copies the web build + plugins into the native project
 ```
 This creates an `ios/` folder — commit it (Capacitor manages its own .gitignore inside).
