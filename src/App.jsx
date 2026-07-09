@@ -177,10 +177,24 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
   const mapboxglRef = useRef(null)
   const markersRef = useRef(new Map()) // venue.id -> { marker, el, venue }
   const geolocateRef = useRef(null)
-  const didFitRef = useRef(false) // fit the view to all pins once on first load
+  const didFitRef = useRef(false)     // initial camera has been set (by GPS or pins)
+  const geoFailedRef = useRef(false)  // GPS denied/unavailable → fall back to framing pins
   const [mapReady, setMapReady] = useState(false)
   const selectedRef = useRef(selectedVenue)
   selectedRef.current = selectedVenue
+
+  // Frame all current pins — the FALLBACK when GPS can't place the user. Reads
+  // markersRef so it works whenever it's called (uses only stable refs).
+  const fitToPins = () => {
+    const mapboxgl = mapboxglRef.current
+    if (!mapboxgl || !mapRef.current || didFitRef.current) return
+    const entries = [...markersRef.current.values()]
+    if (!entries.length) return // nothing plotted yet; the venues effect fits later
+    didFitRef.current = true
+    const bounds = new mapboxgl.LngLatBounds()
+    entries.forEach(e => bounds.extend([e.venue.lng, e.venue.lat]))
+    mapRef.current.fitBounds(bounds, { padding: 56, maxZoom: 14.5, duration: 0 })
+  }
 
   // Init map — mapbox-gl is loaded lazily here (kept out of the initial bundle).
   useEffect(() => {
@@ -210,15 +224,32 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
       map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right')
       map.addControl(geolocate, 'top-right')
 
-      // Don't let a denied/timed-out location prompt fail silently; map stays on NYC.
+      // Start zoomed in on WHERE YOU ARE, not the far-flung spread of every pin.
+      // On success the tracking control flies to + follows the user; if it's
+      // denied/unavailable/slow we fall back to framing the user's pins so the
+      // map is never stranded on a default city.
+      let fallbackTimer = null
+      const fallbackToPins = () => {
+        if (didFitRef.current) return
+        geoFailedRef.current = true
+        fitToPins()
+      }
+      geolocate.on('geolocate', () => {
+        didFitRef.current = true          // GPS owns the camera; don't fit over it
+        if (fallbackTimer) clearTimeout(fallbackTimer)
+      })
       geolocate.on('error', (err) => {
-        console.warn('Geolocation unavailable; staying centered on NYC.', err?.message || err)
+        console.warn('Geolocation unavailable; framing your pins instead.', err?.message || err)
+        if (fallbackTimer) clearTimeout(fallbackTimer)
+        fallbackToPins()
       })
 
       map.on('load', () => {
-        // Don't auto-jump to GPS — it would fight the fit-to-your-pins below.
-        // The locate control is still there to recenter on yourself on tap.
-        if (!cancelled) setMapReady(true)
+        if (cancelled) return
+        setMapReady(true)
+        try { geolocate.trigger() } catch { /* control not ready yet */ }
+        // GPS can hang without ever firing error — fall back after a short wait.
+        fallbackTimer = setTimeout(fallbackToPins, 4000)
       })
 
       mapRef.current = map
@@ -273,13 +304,11 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
       markersRef.current.set(v.id, { marker, el, venue: v, collected })
     })
 
-    // On first load with pins, frame ALL of them (so far-flung finds like
-    // Nantucket aren't stranded off a NYC-locked view). Once only.
-    if (!didFitRef.current && mapReady && visible.length > 0) {
-      didFitRef.current = true
-      const bounds = new mapboxgl.LngLatBounds()
-      visible.forEach(v => bounds.extend([v.lng, v.lat]))
-      mapRef.current.fitBounds(bounds, { padding: 56, maxZoom: 14.5, duration: 0 })
+    // Only frame the pins here if GPS FELL BACK (denied/unavailable) and venues
+    // hadn't loaded yet when that happened. On a normal GPS start the map is
+    // already centered on the user, so we leave it alone.
+    if (geoFailedRef.current && !didFitRef.current && mapReady && visible.length > 0) {
+      fitToPins()
     }
   }, [venues, collectionIds, reportedIds, filter, mapReady])
 
