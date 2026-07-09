@@ -2879,7 +2879,7 @@ export default function App() {
   }
 
   const phoneStyle = {
-    maxWidth: 390,
+    maxWidth: 500, // fills every current iPhone edge-to-edge (SE→Pro Max); only caps the web view on desktop
     margin: '0 auto',
     height: '100dvh',
     display: 'flex',

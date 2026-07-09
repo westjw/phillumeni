@@ -23,6 +23,14 @@ if (!Capacitor.isNativePlatform()) {
   })
 }
 
+// Lock the whole app at 100% zoom so the UI can't be pinched out of place — only
+// the map should zoom. WKWebView ignores the viewport's user-scalable=no, so also
+// swallow iOS's pinch gesture events at the page level. Mapbox drives its own zoom
+// from touch events (not these gesture events), so the map keeps zooming fine.
+;['gesturestart', 'gesturechange', 'gestureend'].forEach(evt =>
+  document.addEventListener(evt, e => e.preventDefault(), { passive: false })
+)
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <App />
