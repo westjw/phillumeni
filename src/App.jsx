@@ -612,8 +612,14 @@ function Collection({ items, venues, onRemove, onSubmit }) {
         ) : view === 'grid' ? (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 2, padding: 2 }}>
             {collected.map(item => (
-              <div key={item.id} onClick={() => setDetail(item)} style={{ aspectRatio: '1', background: item.photo_url ? `#000 url("${item.photo_url}") center/cover no-repeat` : (item.venue.bg_color || '#1A1A1A'), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 30, cursor: 'pointer', position: 'relative' }}>
-                {!item.photo_url && item.venue.emoji}
+              // Photos are real <img loading="lazy" decoding="async"> — NOT CSS
+              // backgrounds, which load eagerly all-at-once and decode the full
+              // 1600px upload on the main thread for every tile (the Collection-
+              // page jank). Lazy imgs only fetch what's on screen.
+              <div key={item.id} onClick={() => setDetail(item)} style={{ aspectRatio: '1', background: item.venue.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 30, cursor: 'pointer', position: 'relative', overflow: 'hidden' }}>
+                {item.photo_url
+                  ? <img src={item.photo_url} alt="" loading="lazy" decoding="async" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', background: '#000' }} />
+                  : item.venue.emoji}
                 {item.venue.status === 'closed' && (
                   <div style={{ position: 'absolute', top: 4, left: 4, background: 'rgba(0,0,0,0.72)', color: '#fff', fontSize: 8, fontWeight: 700, letterSpacing: .3, padding: '1px 5px', borderRadius: 99 }}>CLOSED</div>
                 )}
@@ -627,7 +633,11 @@ function Collection({ items, venues, onRemove, onSubmit }) {
           <div style={{ padding: '0 16px' }}>
             {collected.map(item => (
               <div key={item.id} onClick={() => setDetail(item)} style={{ display: 'flex', gap: 11, alignItems: 'center', padding: '10px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
-                <div style={{ width: 52, height: 52, borderRadius: 10, background: item.photo_url ? `#000 url("${item.photo_url}") center/cover no-repeat` : (item.venue.bg_color || '#1A1A1A'), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>{!item.photo_url && item.venue.emoji}</div>
+                <div style={{ width: 52, height: 52, borderRadius: 10, background: item.venue.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0, overflow: 'hidden', position: 'relative' }}>
+                  {item.photo_url
+                    ? <img src={item.photo_url} alt="" loading="lazy" decoding="async" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', background: '#000' }} />
+                    : item.venue.emoji}
+                </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
                   <div style={{ fontSize: 11, color: C.muted }}>
@@ -1469,7 +1479,7 @@ function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone, initial
 
 // Per-row action menu on the Mine list: re-rank (redo the head-to-heads) or
 // report. Matches ReportSheet's bottom-sheet styling.
-function RankActionsSheet({ item, onReRank, onReport, onClose }) {
+function RankActionsSheet({ item, onReRank, onUnrank, onReport, onClose }) {
   const option = { width: '100%', display: 'flex', alignItems: 'center', gap: 14, padding: '14px', border: `1.5px solid ${C.border}`, borderRadius: 14, background: C.card, cursor: 'pointer', marginBottom: 10, textAlign: 'left' }
   const iconWrap = { width: 44, height: 44, borderRadius: 12, background: C.surface, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
   return (
@@ -1486,6 +1496,13 @@ function RankActionsSheet({ item, onReRank, onReport, onClose }) {
             <div style={{ fontSize: 12, color: C.muted }}>Redo the head-to-heads to move it</div>
           </div>
         </button>
+        <button onClick={onUnrank} style={option}>
+          <div style={iconWrap}><i className="ti ti-arrow-bar-to-down" style={{ fontSize: 20, color: C.sec }} /></div>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Move to unranked</div>
+            <div style={{ fontSize: 12, color: C.muted }}>Take it out of your list until you rank it</div>
+          </div>
+        </button>
         <button onClick={onReport} style={option}>
           <div style={iconWrap}><i className="ti ti-flag" style={{ fontSize: 20, color: C.sec }} /></div>
           <div>
@@ -1500,7 +1517,7 @@ function RankActionsSheet({ item, onReRank, onReport, onClose }) {
 }
 
 // ─── RANKINGS SCREEN ─────────────────────────────────────
-function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onSheetOpenChange }) {
+function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank, onSheetOpenChange }) {
   const [tab, setTab] = useState('mine')
   const [reporting, setReporting] = useState(null) // venue being reported
   const [actions, setActions] = useState(null)     // ranked item whose ··· menu is open
@@ -1740,6 +1757,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onSheetO
           item={actions}
           onClose={() => setActions(null)}
           onReRank={() => { const it = actions; setActions(null); onReRank?.(it) }}
+          onUnrank={() => { const it = actions; setActions(null); onUnrank?.(it) }}
           onReport={() => { const v = actions.venue; setActions(null); setReporting(v) }}
         />
       )}
@@ -1909,8 +1927,10 @@ function ProfileScreen({ user, displayName, collection, onSignOut, onDeleteAccou
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 2, padding: 2 }}>
             {collection.map(item => item.venue && (
-              <div key={item.id} style={{ aspectRatio: '1', background: item.photo_url ? `#000 url("${item.photo_url}") center/cover no-repeat` : (item.venue.bg_color || '#1A1A1A'), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, position: 'relative' }}>
-                {!item.photo_url && item.venue.emoji}
+              <div key={item.id} style={{ aspectRatio: '1', background: item.venue.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, position: 'relative', overflow: 'hidden' }}>
+                {item.photo_url
+                  ? <img src={item.photo_url} alt="" loading="lazy" decoding="async" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', background: '#000' }} />
+                  : item.venue.emoji}
                 {item.venue.status === 'closed' && (
                   <div style={{ position: 'absolute', top: 4, left: 4, background: 'rgba(0,0,0,0.72)', color: '#fff', fontSize: 8, fontWeight: 700, letterSpacing: .3, padding: '1px 5px', borderRadius: 99 }}>CLOSED</div>
                 )}
@@ -2881,6 +2901,15 @@ export default function App() {
     })
   }
 
+  // Demote a spot back to the Unranked section (score=null) — the cleanup tool
+  // for legacy auto-seeded scores that squat in positions the user never chose.
+  const handleUnrank = async (item) => {
+    const { error } = await supabase.from('collections')
+      .update({ score: null }).eq('user_id', user.id).eq('venue_id', item.venue_id)
+    if (error) { console.error('Unrank failed', error); return }
+    setCollection(prev => prev.map(c => (c.venue_id === item.venue_id ? { ...c, score: null } : c)))
+  }
+
   // Tapping a bottom tab from anywhere (Submit, Admin, Invite, Find, Re-rank)
   // exits that flow and lands on the tab — so you're never stuck in a screen.
   const handleNav = (t) => {
@@ -2997,7 +3026,7 @@ export default function App() {
             />
           )}
           {tab === 'rankings' && (
-            <Rankings collection={collection} venues={venues} onFlag={handleFlag} onFakeReport={handleFakeReport} onReRank={startReRank} onSheetOpenChange={setSheetOpen} />
+            <Rankings collection={collection} venues={venues} onFlag={handleFlag} onFakeReport={handleFakeReport} onReRank={startReRank} onUnrank={handleUnrank} onSheetOpenChange={setSheetOpen} />
           )}
           {tab === 'collection' && (
             <Collection
