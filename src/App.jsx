@@ -739,10 +739,13 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
     setSearching(true)
     setSearchErr('')
     try {
-      // Mapbox Search Box API — the v5 geocoder's POI search is deprecated
+      // Mapbox Search Box API — the v5 geocoder's POI search is deprecated.
+      // proximity=ip softly biases to wherever the searcher actually is (was
+      // hard-locked to NYC, which buried far-flung spots like a Nantucket bar);
+      // limit=10 is the max, so more results come back to scroll through.
       const res = await fetch(
         `https://api.mapbox.com/search/searchbox/v1/suggest?q=${encodeURIComponent(query)}` +
-        `&proximity=${NYC.lng},${NYC.lat}&types=poi&limit=6` +
+        `&proximity=ip&types=poi&limit=10` +
         `&session_token=${getSession()}&access_token=${MAPBOX_TOKEN}`
       )
       if (!res.ok) throw new Error(`Search unavailable (${res.status})`)
@@ -1155,7 +1158,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
             )}
 
             {results.length > 0 && (
-              <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
+              <Card style={{ padding: 0, maxHeight: '46vh', overflowY: 'auto', marginBottom: 16 }}>
                 {results.map((r, i) => {
                   // A place already in your collection can't be added again — flag it
                   // and make the row non-selectable so you can't re-submit it.
