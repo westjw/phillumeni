@@ -952,29 +952,30 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
     setManualAdding(true)
     setManualErr('')
     try {
-      const center = cityCenter(manualCity)
-      let lng = center.lng, lat = center.lat
-      let geoCity = null, geoHood = null
-      try {
-        const res = await fetch(
-          `https://api.mapbox.com/search/geocode/v6/forward?q=${encodeURIComponent(`${address}, ${cityLabel(manualCity)}`)}` +
-          `&proximity=${center.lng},${center.lat}&limit=1&access_token=${MAPBOX_TOKEN}`
-        )
-        if (res.ok) {
-          const data = await res.json()
-          const feat = data.features?.[0]
-          const coords = feat?.geometry?.coordinates
-          if (coords && coords.length >= 2) { lng = coords[0]; lat = coords[1] }
-          const place = placeFromContext(feat?.properties)
-          geoCity = place.city; geoHood = place.neighborhood
-        }
-      } catch { /* keep the city-center fallback */ }
+      // Geocode the FULL typed address anywhere (the old flow was locked to NYC,
+      // so you couldn't add a Nantucket spot at all). proximity=ip softly biases
+      // to the searcher; require a real hit so a venue is never created with a
+      // guessed/wrong location.
+      const res = await fetch(
+        `https://api.mapbox.com/search/geocode/v6/forward?q=${encodeURIComponent(address)}` +
+        `&proximity=ip&limit=1&access_token=${MAPBOX_TOKEN}`
+      )
+      const data = res.ok ? await res.json() : null
+      const feat = data?.features?.[0]
+      const coords = feat?.geometry?.coordinates
+      if (!coords || coords.length < 2) {
+        setManualAdding(false)
+        setManualErr('Couldn’t find that address — include the street, town, and state (e.g. “326 Madaket Rd, Nantucket, MA”).')
+        return
+      }
+      const [lng, lat] = coords
+      const place = placeFromContext(feat?.properties)
 
       const venueRow = {
         name,
         address,
-        neighborhood: geoHood || address.split(',')[1]?.trim() || null,
-        city: geoCity || cityLabel(manualCity),
+        neighborhood: place.neighborhood || null,
+        city: place.city || 'Unknown',
         lat,
         lng,
         type: 'Spot',
@@ -1189,7 +1190,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
             {/* Manual-entry escape hatch (spec §2) — closed/missing venues */}
             <button onClick={() => { setManualName(query.trim()); setManualAddress(''); setManualErr(''); setShowManual(true) }}
               style={{ width: '100%', padding: 13, border: `1.5px dashed ${C.borderStr}`, borderRadius: 13, background: 'transparent', color: C.text, fontSize: 13, fontWeight: 700, cursor: 'pointer', marginBottom: 16 }}>
-              Can't find it? This place might be closed
+              Can't find it? Add it by address
             </button>
 
             {addErr && (
@@ -1233,24 +1234,16 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
           <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px', maxHeight: '88%', overflowY: 'auto', boxShadow: '0 -6px 24px rgba(0,0,0,0.18)' }}>
             <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
             <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 6 }}>Add it manually</div>
-            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 18 }}>We'll geocode the address ourselves so it still shows up on the map correctly.</div>
-
-            <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.5px', marginBottom: 7 }}>CITY</div>
-            <div style={{ position: 'relative', marginBottom: 16 }}>
-              <select value={manualCity} onChange={e => setManualCity(e.target.value)}
-                style={{ width: '100%', padding: '13px 14px', border: `1.5px solid ${C.amberBd}`, borderRadius: 13, background: C.amberBg, color: C.amber, fontSize: 15, fontWeight: 700, appearance: 'none', WebkitAppearance: 'none', cursor: 'pointer', outline: 'none' }}>
-                {CITIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-              </select>
-              <i className="ti ti-chevron-down" style={{ position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', color: C.amber, fontSize: 16, pointerEvents: 'none' }} />
-            </div>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 18 }}>For a spot our search can't find. Type its full address and we'll place it on the map from that.</div>
 
             <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.5px', marginBottom: 7 }}>VENUE NAME</div>
-            <input value={manualName} onChange={e => setManualName(e.target.value)} placeholder="Venue name"
+            <input value={manualName} onChange={e => setManualName(e.target.value)} placeholder="e.g. Millie's"
               style={{ width: '100%', padding: '13px 14px', border: `1.5px solid ${C.border}`, borderRadius: 13, background: C.card, color: C.text, fontSize: 15, fontWeight: 500, outline: 'none', marginBottom: 16 }} />
 
-            <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.5px', marginBottom: 7 }}>ADDRESS</div>
-            <input value={manualAddress} onChange={e => setManualAddress(e.target.value)} placeholder="Street, neighborhood…"
-              style={{ width: '100%', padding: '13px 14px', border: `1.5px solid ${C.border}`, borderRadius: 13, background: C.card, color: C.text, fontSize: 15, fontWeight: 500, outline: 'none', marginBottom: 18 }} />
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.5px', marginBottom: 7 }}>FULL ADDRESS</div>
+            <input value={manualAddress} onChange={e => setManualAddress(e.target.value)} placeholder="Street, town, state" autoCapitalize="words"
+              style={{ width: '100%', padding: '13px 14px', border: `1.5px solid ${C.border}`, borderRadius: 13, background: C.card, color: C.text, fontSize: 15, fontWeight: 500, outline: 'none', marginBottom: 6 }} />
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 18, lineHeight: 1.5 }}>Include the town + state so it lands right — e.g. “326 Madaket Rd, Nantucket, MA”.</div>
 
             {manualErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, lineHeight: 1.4 }}>{manualErr}</div>}
             <PrimaryBtn onClick={handleAddManual} disabled={manualAdding}>{manualAdding ? 'Adding…' : 'Continue'}</PrimaryBtn>
