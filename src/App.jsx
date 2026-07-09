@@ -1028,21 +1028,10 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
     setManualAdding(false)
   }
 
-  // "Skip for now" from the step-3 confirmation: never leave the new venue at
-  // score null. Seed it with the median of the ranked list (the score its first
-  // comparison would have started from), then bow out.
-  const skipRanking = async () => {
-    if (addedVenue) {
-      const medianScore = rankedItems[Math.floor((rankedItems.length - 1) / 2)]?.score
-      const { error } = await supabase.from('collections')
-        .update({ score: Math.round(((medianScore ?? 7.5)) * 10) / 10 })
-        .eq('user_id', user.id).eq('venue_id', addedVenue.id)
-      if (error) { // don't navigate away on a failed write — keep the user here to retry
-        console.error('Skip-ranking score write failed', error)
-        setAddErr('Couldn’t save — try again.')
-        return
-      }
-    }
+  // "Skip for now" from the step-3 confirmation: the spot stays UNRANKED
+  // (score null) — no invented median position. It waits in Rankings → Mine's
+  // "Unranked" section with a Rank button, so it's never stranded.
+  const skipRanking = () => {
     ;(onRankingDone || onBack)()
   }
 
@@ -1328,10 +1317,11 @@ function ReportSheet({ venue, onClose, onNotAvailable, onFake }) {
 }
 
 // ─── COMPARISON FLOW ─────────────────────────────────────
-// Binary-search insertion into the user's ranked list with Elo updates per tap.
-// Invariant: the new venue ALWAYS leaves this screen with a non-null score —
-// completing writes the Elo result; skipping/abandoning persists the fair
-// baseline (the opponent's score) so a ranked submission can never go missing.
+// Binary-search insertion into the user's ranked list. Completing (or "too
+// close to call") writes a full position-derived respread of the list — see
+// finishAt. Abandoning mid-session (tab nav) writes NOTHING: an uncompared spot
+// simply stays score=null, which is a legitimate state — it waits in Rankings'
+// "Unranked" section with a Rank button until the user places it.
 function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone, initialScore = null, reRank = false }) {
   // Opponents = the user's existing ranked list, defensively excluding the new
   // venue itself (it must never compare against itself — which is exactly what
@@ -1354,36 +1344,39 @@ function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone, initial
   const opponent = opponents[mid]
   const finished = !opponent || lo > hi
 
-  // Your head-to-head choices decide the ORDER. The binary search converges to an
-  // insertion slot; the score is then INTERPOLATED between the two neighbors that
-  // bracket that slot — so the stored score is always consistent with your picks
-  // (a spot you chose over another always sorts above it), and NO existing spot is
-  // ever nudged. `insertIdx` is the slot in the score-descending opponents list.
-  // Runs exactly once; finishedRef is released on a failed write so it can retry.
+  // Your head-to-head choices decide the ORDER; scores are then derived from the
+  // final positions for the WHOLE list — 10.0 at the top down to 5.0 at the
+  // bottom, evenly spaced, ALWAYS unique. Interpolating between neighbors isn't
+  // enough: neighbors can be TIED (legacy seeds / old-Elo data), and the midpoint
+  // of two equal scores is another tie, whose display order falls to sort
+  // stability — exactly how a spot you just beat could still display above you.
+  // Rewriting the full spacing makes ties impossible, so the displayed order
+  // provably matches the comparisons, and every session also repairs the spacing
+  // of older rows in passing. One atomic batch write; retried on failure.
   const finishAt = useCallback(async (insertIdx) => {
     if (finishedRef.current) return
     finishedRef.current = true
-    const above = insertIdx > 0 ? opponents[insertIdx - 1]?.score : null            // higher-ranked neighbor
-    const below = insertIdx < opponents.length ? opponents[insertIdx]?.score : null // lower-ranked neighbor
-    let s
-    if (above != null && below != null) s = (above + below) / 2
-    else if (below != null) s = below + Math.min(0.3, (10 - below) / 2)             // lands #1
-    else if (above != null) s = above - Math.min(0.3, above / 2)                    // lands last
-    else s = initialScore != null ? initialScore : 7.5                             // nothing to compare against
-    // Store FULL precision (the list displays .toFixed(1)). Rounding the midpoint
-    // to 2 decimals could round it past a neighbor when spots are tightly packed,
-    // re-introducing an inversion; the exact midpoint is always strictly between.
-    s = Math.max(0, Math.min(10, s))
+    const order = [
+      ...opponents.slice(0, insertIdx).map(o => o.venue_id),
+      newVenue.id,
+      ...opponents.slice(insertIdx).map(o => o.venue_id),
+    ]
+    const n = order.length
+    const rows = order.map((venue_id, i) => ({
+      user_id: user.id,
+      venue_id,
+      score: n === 1 ? 7.5 : 10 - (5 * i) / (n - 1),
+    }))
     const { error } = await supabase.from('collections')
-      .update({ score: s }).eq('user_id', user.id).eq('venue_id', newVenue.id)
+      .upsert(rows, { onConflict: 'user_id,venue_id' })
     if (error) {
       finishedRef.current = false // release so the user can retry
-      console.error('Ranking score write failed', error)
+      console.error('Ranking write failed', error)
       setWriteErr('Couldn’t save — tap again.')
       return
     }
     onDone()
-  }, [opponents, initialScore, user.id, newVenue.id, onDone])
+  }, [opponents, user.id, newVenue.id, onDone])
 
   // Terminal condition (search converged / no opponents) — run as an effect. `lo`
   // is the final insertion slot; captured fresh in the render where finished flips.
@@ -1526,6 +1519,14 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onSheetO
     .sort((a, b) => b.score - a.score)
     .map((item, idx) => ({ ...item, rank: idx + 1 }))
 
+  // Uncompared spots (map "Got it" / skipped) wait here, OUTSIDE the ranking,
+  // until the user places them via the Rank button — only head-to-head choices
+  // can put something in the ordered list.
+  const unranked = collection
+    .filter(i => i.score == null)
+    .map(item => ({ ...item, venue: venueMap[item.venue_id] }))
+    .filter(i => i.venue)
+
   // Friends rankings: per-venue avg score across people you follow (RPC; the rows
   // come back already sorted best-first). null = loading, [] = loaded empty.
   const [friendsRows, setFriendsRows] = useState(null)
@@ -1629,7 +1630,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onSheetO
 
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {tab === 'mine' ? (
-          ranked.length === 0 ? (
+          (ranked.length === 0 && unranked.length === 0) ? (
             <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
               <div style={{ fontSize: 40, marginBottom: 12 }}>🏆</div>
               <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>No rankings yet</div>
@@ -1651,6 +1652,31 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onSheetO
                   <button onClick={() => setActions(item)} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: '4px 2px', fontSize: 18, flexShrink: 0, letterSpacing: '.5px' }}>···</button>
                 </div>
               ))}
+              {unranked.length > 0 && (
+                <>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.5px', padding: '18px 0 6px' }}>
+                    UNRANKED · {unranked.length}
+                  </div>
+                  <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5, paddingBottom: 6 }}>
+                    Collected but not placed yet — rank them to add them to your list.
+                  </div>
+                  {unranked.map(item => (
+                    <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}` }}>
+                      <div style={{ width: 42, height: 42, borderRadius: 11, background: item.venue.bg_color || C.dark, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0, letterSpacing: '-.2px', opacity: 0.75 }}>
+                        {venueInitials(item.venue.name)}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
+                        <div style={{ fontSize: 12, color: C.muted }}>{item.venue.neighborhood || item.venue.city}</div>
+                      </div>
+                      <button onClick={() => onReRank?.(item)}
+                        style={{ flexShrink: 0, fontSize: 12.5, fontWeight: 700, padding: '7px 16px', borderRadius: 99, border: 'none', background: C.amber, color: '#fff', cursor: 'pointer' }}>
+                        Rank
+                      </button>
+                    </div>
+                  ))}
+                </>
+              )}
               <div style={{ height: 24 }} />
             </div>
           )
@@ -2721,19 +2747,13 @@ export default function App() {
 
   const handleCollect = async (venue) => {
     if (!user) return false
-    // Seed a score so a venue collected from the map actually appears in Rankings
-    // (first ranked → 7.5, otherwise the median of your list). Without this,
-    // "Got it" venues were stranded with score=null and never rankable.
-    const median = rankedItems.length ? rankedItems[Math.floor((rankedItems.length - 1) / 2)]?.score : null
-    const score = Math.round((rankedItems.length === 0 ? 7.5 : (median ?? 7.5)) * 10) / 10
-    const row = { user_id: user.id, venue_id: venue.id, score }
-    let data = null, error = null
-    for (let attempt = 0; attempt < 2; attempt++) {
-      ;({ data, error } = await supabase.from('collections').insert(row).select().single())
-      if (!error) break
-      if (isMissingColumn(error) && 'score' in row) { delete row.score; continue } // pre-007 DB
-      break
-    }
+    // A venue collected from the map is UNRANKED (score null) until the user
+    // places it via head-to-heads. It is NOT stranded: Rankings → Mine shows it
+    // in the "Unranked" section with a Rank button. The old behavior seeded the
+    // list median, silently squatting mid-ranking in a slot the user never chose
+    // — the #1 source of "my rankings are wrong".
+    const row = { user_id: user.id, venue_id: venue.id }
+    const { data, error } = await supabase.from('collections').insert(row).select().single()
     if (error) {
       if (error.code === '23505') return true // already collected — treat as success
       console.error('Collect failed', error)
@@ -2927,7 +2947,7 @@ export default function App() {
           initialScore={reRankTarget.score}
           rankedItems={rankedItems}
           user={user}
-          reRank
+          reRank={reRankTarget.score != null} // unranked spots get first-time "Where does this rank?" copy
           onDone={() => { setReRankTarget(null); refreshCollection(); setTab('rankings') }}
         />
       ) : showSubmit ? (
