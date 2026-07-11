@@ -171,12 +171,14 @@ function styleMarkerEl(el, v, isSelected, collected) {
   el.textContent = v.status === 'closed' ? '✕' : '✦'
 }
 
-function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVenue, filter }) {
+function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVenue, filter, onCenterChange }) {
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const mapboxglRef = useRef(null)
   const markersRef = useRef(new Map()) // venue.id -> { marker, el, venue }
   const geolocateRef = useRef(null)
+  const onCenterChangeRef = useRef(onCenterChange)
+  onCenterChangeRef.current = onCenterChange
   const didFitRef = useRef(false)     // initial camera has been set (by GPS or pins)
   const geoFailedRef = useRef(false)  // GPS denied/unavailable → fall back to framing pins
   const [mapReady, setMapReady] = useState(false)
@@ -223,6 +225,13 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
 
       map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right')
       map.addControl(geolocate, 'top-right')
+
+      // Keep the "spots nearby" list in sync with where the map is LOOKING —
+      // with hundreds of venues, "nearby" must mean the current view, not A-Z.
+      map.on('moveend', () => {
+        const c = map.getCenter()
+        onCenterChangeRef.current?.({ lat: c.lat, lng: c.lng })
+      })
 
       // Start zoomed in on WHERE YOU ARE, not the far-flung spread of every pin.
       // On success the tracking control flies to + follows the user; if it's
@@ -329,6 +338,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
   const [reporting, setReporting] = useState(null) // venue being reported
   const [venuePhotos, setVenuePhotos] = useState([]) // anonymized gallery for the open venue
   const [collectErr, setCollectErr] = useState('')
+  const [mapCenter, setMapCenter] = useState(NYC) // where the map is looking (drives "nearby")
   const reportedIds = useMemo(() => reported.map(r => r.venue_id), [reported])
 
   // Tell the shell a sheet is open so it can hide the tab bar (sheet covers it).
@@ -351,6 +361,8 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
     return () => { cancelled = true }
   }, [selected])
 
+  // "Nearby" = closest to where the map is looking, not alphabetical — with
+  // hundreds of venues, A-Z-first-8 showed the same list to everyone.
   const listed = venues
     .filter(v => {
       if (reportedIds.includes(v.id)) return false
@@ -359,7 +371,9 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
       if (filter === 'multi') return (v.sources || []).length >= 2
       return true
     })
-    .slice(0, 8)
+    .map(v => ({ ...v, _d: (v.lat - mapCenter.lat) ** 2 + ((v.lng - mapCenter.lng) * 0.766) ** 2 }))
+    .sort((a, b) => a._d - b._d)
+    .slice(0, 20)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}>
@@ -383,6 +397,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
           onSelectVenue={setSelected}
           selectedVenue={selected}
           filter={filter}
+          onCenterChange={setMapCenter}
         />
       </div>
 
@@ -504,7 +519,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
 }
 
 // ─── COLLECTION SCREEN ───────────────────────────────────
-function Collection({ items, venues, onRemove, onSubmit }) {
+function Collection({ items, venues, onRemove, onSubmit, onReRank }) {
   const [view, setView] = useState('grid')
   const [detail, setDetail] = useState(null)
 
@@ -552,6 +567,15 @@ function Collection({ items, venues, onRemove, onSubmit }) {
               <div style={{ background: C.surface, borderRadius: 12, padding: '10px 12px', fontSize: 12, color: C.muted, marginBottom: 14, lineHeight: 1.5 }}>
                 <i className="ti ti-camera" style={{ fontSize: 12, marginRight: 6 }} />No photos for this one yet
               </div>
+            )}
+            {onReRank && (
+              <button
+                onClick={() => { const it = detail; setDetail(null); onReRank(it) }}
+                style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: C.amber, color: '#fff', border: 'none', borderRadius: 12, padding: '13px', fontSize: 14, fontWeight: 700, cursor: 'pointer', marginBottom: 10 }}
+              >
+                <i className="ti ti-trophy" style={{ fontSize: 15 }} />
+                {detail.score == null ? 'Rank this spot' : 'Re-rank this spot'}
+              </button>
             )}
             <OutlineBtn onClick={() => { onRemove(detail.id); setDetail(null) }} color={C.red}>Remove from collection</OutlineBtn>
           </div>
@@ -3052,6 +3076,7 @@ export default function App() {
               venues={venues}
               onRemove={handleRemoveFromCollection}
               onSubmit={() => setShowSubmit(true)}
+              onReRank={startReRank}
             />
           )}
           {tab === 'profile' && (
