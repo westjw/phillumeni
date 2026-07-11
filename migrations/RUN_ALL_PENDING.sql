@@ -510,6 +510,12 @@ grant execute on function public.world_rankings() to authenticated;
 -- ONLY the caller's account/data (auth.uid()); venues.created_by/fake_reports
 -- .resolved_by are nulled first (non-cascade FKs would block the delete + venues
 -- are shared), then the user's storage files, then auth.users (cascades the rest).
+-- Let users delete files in their OWN folder of the matchbooks bucket.
+drop policy if exists "Users can delete own matchbook files" on storage.objects;
+create policy "Users can delete own matchbook files"
+  on storage.objects for delete
+  using (bucket_id = 'matchbooks' and (storage.foldername(name))[1] = auth.uid()::text);
+
 create or replace function public.delete_my_account()
 returns void
 language plpgsql
@@ -524,9 +530,6 @@ begin
   end if;
   update public.venues set created_by = null where created_by = uid;
   update public.fake_reports set resolved_by = null where resolved_by = uid;
-  delete from storage.objects
-  where bucket_id = 'matchbooks'
-    and (storage.foldername(name))[1] = uid::text;
   delete from auth.users where id = uid;
 end;
 $$;

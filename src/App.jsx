@@ -2845,10 +2845,28 @@ export default function App() {
     }
   }
 
-  // Permanently delete the account + all data (App Store requirement). The RPC
-  // erases everything server-side; on success we tear down the local session the
-  // same way sign-out does. Returns an error to the caller to surface, or null.
+  // Permanently delete the account + all data (App Store requirement).
+  // Order matters: the user's uploaded FILES are deleted first via the Storage
+  // API — Supabase refuses SQL DML on storage.objects (42501 "use the Storage
+  // API instead"), so the RPC can't do it — and this needs the still-live
+  // session. Then delete_my_account() erases the auth user, which cascades all
+  // their rows. Any failure aborts BEFORE the account is touched, so a retry is
+  // always safe. Returns an error to surface, or null on success.
   const handleDeleteAccount = async () => {
+    try {
+      const bucket = supabase.storage.from('matchbooks')
+      for (let page = 0; page < 20; page++) { // safety cap ~2000 files
+        const { data: files, error: listErr } = await bucket.list(user.id, { limit: 100 })
+        if (listErr) throw listErr
+        if (!files || files.length === 0) break
+        const { error: rmErr } = await bucket.remove(files.map(f => `${user.id}/${f.name}`))
+        if (rmErr) throw rmErr
+        if (files.length < 100) break
+      }
+    } catch (e) {
+      console.error('Storage cleanup failed; account NOT deleted', e)
+      return e
+    }
     const { error } = await supabase.rpc('delete_my_account')
     if (error) { console.error('Account deletion failed', error); return error }
     await handleSignOut()
