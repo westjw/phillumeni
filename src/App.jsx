@@ -70,11 +70,6 @@ const C = {
   dark:'#1A1918',
 }
 
-const pinColor = (v) => {
-  if (v.status === 'closed') return C.muted   // status distinction only
-  return C.green                              // every active spot looks the same
-}
-
 // ─── SMALL COMPONENTS ────────────────────────────────────
 const Av = ({ ini, bg, tc, size = 34 }) => (
   <div style={{ width: size, height: size, borderRadius: '50%', background: bg, color: tc, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * .34, fontWeight: 600, flexShrink: 0 }}>{ini}</div>
@@ -148,34 +143,16 @@ function MbIcon({ size = 40 }) {
 }
 
 // ─── MAPBOX MAP ──────────────────────────────────────────
-// Style a marker's DOM element for its venue + selected state (no recreation).
-// IMPORTANT: set individual style props, never el.style.cssText — Mapbox owns
-// the element's `transform` (its geographic position), and clobbering cssText
-// would wipe it, making the marker jump across the map on every restyle.
-function styleMarkerEl(el, v, isSelected, collected) {
-  const s = el.style
-  s.width = s.height = `${isSelected ? 34 : 28}px`
-  s.borderRadius = '50%'
-  s.background = pinColor(v)
-  s.border = `${isSelected ? '3px' : '2.5px'} solid white`
-  s.cursor = 'pointer'
-  s.display = 'flex'
-  s.alignItems = 'center'
-  s.justifyContent = 'center'
-  s.fontSize = '10px'
-  s.color = 'white'
-  s.fontWeight = '700'
-  s.boxShadow = `0 ${isSelected ? 4 : 2}px ${isSelected ? 16 : 8}px rgba(0,0,0,${isSelected ? 0.4 : 0.25})`
-  // Animate size/shadow only — NOT transform, or position changes would slide.
-  s.transition = 'width .15s, height .15s, background .15s, box-shadow .15s, border .15s'
-  el.textContent = v.status === 'closed' ? '✕' : '✦'
-}
+// Venues render as CLUSTERED WebGL layers, not per-venue DOM markers: with
+// ~700 venues, one DOM element each was the map's biggest performance cost on
+// phones. Mapbox's geojson clustering merges dense areas into numbered bubbles
+// that split apart as you zoom; singles are plain circles (green = active,
+// grey = closed) with a bigger ring for the selected venue.
 
 function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVenue, filter, onCenterChange }) {
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const mapboxglRef = useRef(null)
-  const markersRef = useRef(new Map()) // venue.id -> { marker, el, venue }
   const geolocateRef = useRef(null)
   const onCenterChangeRef = useRef(onCenterChange)
   onCenterChangeRef.current = onCenterChange
@@ -184,17 +161,17 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
   const [mapReady, setMapReady] = useState(false)
   const selectedRef = useRef(selectedVenue)
   selectedRef.current = selectedVenue
+  const venueByIdRef = useRef(new Map()) // vid -> full venue (layer clicks carry only ids)
+  const pointsRef = useRef([])           // latest plotted [lng,lat]s, for fitToPins
 
-  // Frame all current pins — the FALLBACK when GPS can't place the user. Reads
-  // markersRef so it works whenever it's called (uses only stable refs).
+  // Frame all current pins — the FALLBACK when GPS can't place the user.
   const fitToPins = () => {
     const mapboxgl = mapboxglRef.current
     if (!mapboxgl || !mapRef.current || didFitRef.current) return
-    const entries = [...markersRef.current.values()]
-    if (!entries.length) return // nothing plotted yet; the venues effect fits later
+    if (!pointsRef.current.length) return // nothing plotted yet; the venues effect fits later
     didFitRef.current = true
     const bounds = new mapboxgl.LngLatBounds()
-    entries.forEach(e => bounds.extend([e.venue.lng, e.venue.lat]))
+    pointsRef.current.forEach(p => bounds.extend(p))
     mapRef.current.fitBounds(bounds, { padding: 56, maxZoom: 14.5, duration: 0 })
   }
 
@@ -255,6 +232,85 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
 
       map.on('load', () => {
         if (cancelled) return
+
+        // Clustered venue source + layers (WebGL — no DOM markers).
+        map.addSource('venues', {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features: [] },
+          cluster: true,
+          clusterMaxZoom: 15,
+          clusterRadius: 46,
+        })
+        map.addLayer({
+          id: 'clusters', type: 'circle', source: 'venues',
+          filter: ['has', 'point_count'],
+          paint: {
+            'circle-color': '#1A1918',
+            'circle-radius': ['step', ['get', 'point_count'], 15, 25, 19, 100, 23],
+            'circle-stroke-width': 2.5, 'circle-stroke-color': '#FFFFFF',
+            'circle-opacity': 0.95,
+          },
+        })
+        map.addLayer({
+          id: 'cluster-count', type: 'symbol', source: 'venues',
+          filter: ['has', 'point_count'],
+          layout: {
+            'text-field': ['get', 'point_count_abbreviated'],
+            'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold'],
+            'text-size': 12, 'text-allow-overlap': true,
+          },
+          paint: { 'text-color': '#FFFFFF' },
+        })
+        const pinColor = ['case', ['==', ['get', 'closed'], 1], '#9C9990', '#1A9470']
+        map.addLayer({
+          id: 'pins', type: 'circle', source: 'venues',
+          filter: ['!', ['has', 'point_count']],
+          paint: {
+            'circle-color': pinColor, 'circle-radius': 8,
+            'circle-stroke-width': 2.5, 'circle-stroke-color': '#FFFFFF',
+            'circle-opacity': 0.95,
+          },
+        })
+        map.addLayer({
+          id: 'pin-selected', type: 'circle', source: 'venues',
+          filter: ['==', ['get', 'vid'], -999],
+          paint: {
+            'circle-color': pinColor, 'circle-radius': 12,
+            'circle-stroke-width': 3.5, 'circle-stroke-color': '#FFFFFF',
+          },
+        })
+
+        // Tap a cluster → zoom in until it splits.
+        map.on('click', 'clusters', (e) => {
+          const f = map.queryRenderedFeatures(e.point, { layers: ['clusters'] })[0]
+          if (!f) return
+          map.getSource('venues').getClusterExpansionZoom(f.properties.cluster_id, (err, zoom) => {
+            if (err) return
+            map.easeTo({ center: f.geometry.coordinates, zoom: zoom + 0.4 })
+          })
+        })
+        // Tap a pin → select (tap again → deselect).
+        const pinTap = (e) => {
+          const f = e.features && e.features[0]
+          if (!f) return
+          const venue = venueByIdRef.current.get(f.properties.vid)
+          if (!venue) return
+          onSelectVenue(selectedRef.current?.id === venue.id ? null : venue)
+        }
+        map.on('click', 'pins', pinTap)
+        map.on('click', 'pin-selected', pinTap)
+        // Tap empty map → deselect.
+        map.on('click', (e) => {
+          const hits = map.queryRenderedFeatures(e.point, { layers: ['clusters', 'pins', 'pin-selected'] })
+          if (!hits.length && selectedRef.current) onSelectVenue(null)
+        })
+        ;['clusters', 'pins'].forEach(l => {
+          map.on('mouseenter', l, () => { map.getCanvas().style.cursor = 'pointer' })
+          map.on('mouseleave', l, () => { map.getCanvas().style.cursor = '' })
+        })
+
+        if (import.meta.env.DEV) window.__pmap = map // dev-only test/debug handle
+
         setMapReady(true)
         try { geolocate.trigger() } catch { /* control not ready yet */ }
         // GPS can hang without ever firing error — fall back after a short wait.
@@ -268,65 +324,47 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
     return () => {
       cancelled = true
       if (mapRef.current) { mapRef.current.remove(); mapRef.current = null }
-      markersRef.current.clear()
     }
   }, [])
 
-  // Sync markers to the visible set: add new ones, update changed ones in place,
-  // remove gone ones — never a full teardown/rebuild.
+  // Push the visible venue set into the clustered source — one setData call,
+  // Mapbox handles the rest. Only hide venues the user reported unavailable;
+  // closed ones stay visible (grey) as history.
   useEffect(() => {
-    const mapboxgl = mapboxglRef.current
-    if (!mapboxgl || !mapRef.current) return
+    const map = mapRef.current
+    if (!map || !mapReady || !map.getSource('venues')) return
 
-    // Collected venues stay ON the map (marked as yours) — only hide ones you
-    // reported as unavailable. The closed ones stay visible (grey) as history.
     const visible = venues.filter(v => {
       if (reportedIds.includes(v.id)) return false
       if (filter === 'open') return v.is_open && v.status !== 'closed'
       if (filter === 'multi') return (v.sources || []).length >= 2
       return true
     })
-    const visibleIds = new Set(visible.map(v => v.id))
-
-    markersRef.current.forEach((entry, id) => {
-      if (!visibleIds.has(id)) { entry.marker.remove(); markersRef.current.delete(id) }
-    })
-
-    visible.forEach(v => {
-      const collected = collectionIds.includes(v.id)
-      const existing = markersRef.current.get(v.id)
-      if (existing) {
-        existing.venue = v
-        existing.collected = collected
-        existing.marker.setLngLat([v.lng, v.lat])
-        styleMarkerEl(existing.el, v, selectedRef.current?.id === v.id, collected)
-        return
-      }
-      const el = document.createElement('div')
-      el.addEventListener('click', (e) => {
-        e.stopPropagation()
-        const cur = selectedRef.current
-        onSelectVenue(cur?.id === v.id ? null : v)
-      })
-      styleMarkerEl(el, v, selectedRef.current?.id === v.id, collected)
-      const marker = new mapboxgl.Marker({ element: el }).setLngLat([v.lng, v.lat]).addTo(mapRef.current)
-      markersRef.current.set(v.id, { marker, el, venue: v, collected })
+    venueByIdRef.current = new Map(visible.map(v => [v.id, v]))
+    pointsRef.current = visible.map(v => [Number(v.lng), Number(v.lat)])
+    map.getSource('venues').setData({
+      type: 'FeatureCollection',
+      features: visible.map(v => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [Number(v.lng), Number(v.lat)] },
+        properties: { vid: v.id, closed: v.status === 'closed' ? 1 : 0 },
+      })),
     })
 
     // Only frame the pins here if GPS FELL BACK (denied/unavailable) and venues
     // hadn't loaded yet when that happened. On a normal GPS start the map is
     // already centered on the user, so we leave it alone.
-    if (geoFailedRef.current && !didFitRef.current && mapReady && visible.length > 0) {
+    if (geoFailedRef.current && !didFitRef.current && visible.length > 0) {
       fitToPins()
     }
-  }, [venues, collectionIds, reportedIds, filter, mapReady])
+  }, [venues, reportedIds, filter, mapReady])
 
-  // Restyle in place when the selection changes — no marker teardown.
+  // Selection = a filter change on the highlight layer — no data churn at all.
   useEffect(() => {
-    markersRef.current.forEach((entry, id) => {
-      styleMarkerEl(entry.el, entry.venue, selectedVenue?.id === id, entry.collected)
-    })
-  }, [selectedVenue])
+    const map = mapRef.current
+    if (!map || !mapReady || !map.getLayer('pin-selected')) return
+    map.setFilter('pin-selected', ['==', ['get', 'vid'], selectedVenue?.id ?? -999])
+  }, [selectedVenue, mapReady])
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 }
