@@ -111,7 +111,8 @@ create table venues (
   mapbox_id text unique,                 -- stable Search Box POI id (dedup key)
   status text not null default 'active' check (status in ('active','closed')),
   closed_at timestamptz,
-  added_manually boolean default false   -- via the "can't find it" manual entry
+  added_manually boolean default false,  -- via the "can't find it" manual entry
+  kind text not null default 'venue' check (kind in ('venue','keepsake')) -- keepsake = no place (020)
 );
 
 alter table venues enable row level security;
@@ -411,6 +412,7 @@ grant execute on function friends_rankings() to authenticated;
 -- City & World aggregate leaderboards (migration 018): per-venue avg score across
 -- ALL collectors — city-scoped and global. SECURITY DEFINER + authenticated-only
 -- (anon revoked explicitly). Aggregate-only: no names, no per-user rows.
+: already city-scoped (keepsakes have city=null), kind filter for safety.
 create or replace function city_rankings(target_city text)
 returns table (venue_id integer, avg_score numeric, rankers integer)
 language sql
@@ -421,9 +423,10 @@ as $$
   select c.venue_id,
          round(avg(c.score), 1) as avg_score,
          count(*)::int as rankers
-  from public.collections c
-  join public.venues v on v.id = c.venue_id
+  from collections c
+  join venues v on v.id = c.venue_id
   where c.score is not null
+    and v.kind = 'venue'
     and v.city = target_city
   group by c.venue_id
   order by avg_score desc, rankers desc;
@@ -441,8 +444,10 @@ as $$
   select c.venue_id,
          round(avg(c.score), 1) as avg_score,
          count(*)::int as rankers
-  from public.collections c
+  from collections c
+  join venues v on v.id = c.venue_id
   where c.score is not null
+    and v.kind = 'venue'
   group by c.venue_id
   order by avg_score desc, rankers desc
   limit 100;

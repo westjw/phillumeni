@@ -70,6 +70,11 @@ const C = {
   dark:'#1A1918',
 }
 
+// A keepsake is a matchbook with no place (wedding, event): rankable + collectable,
+// but never on the map, nearby list, or shared boards. The (0,0) guard covers rows
+// created before migration 020 added the kind column.
+const isKeepsake = (v) => v?.kind === 'keepsake' || (Number(v?.lat) === 0 && Number(v?.lng) === 0)
+
 // ─── SMALL COMPONENTS ────────────────────────────────────
 const Av = ({ ini, bg, tc, size = 34 }) => (
   <div style={{ width: size, height: size, borderRadius: '50%', background: bg, color: tc, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * .34, fontWeight: 600, flexShrink: 0 }}>{ini}</div>
@@ -339,6 +344,7 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
     if (!map || !mapReady || !map.getSource('venues')) return
 
     const visible = venues.filter(v => {
+      if (isKeepsake(v)) return false // keepsakes have no place — never on the map
       if (reportedIds.includes(v.id)) return false
       if (filter === 'open') return v.is_open && v.status !== 'closed'
       if (filter === 'multi') return (v.sources || []).length >= 2
@@ -449,6 +455,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
   // hundreds of venues, A-Z-first-8 showed the same list to everyone.
   const listed = venues
     .filter(v => {
+      if (isKeepsake(v)) return false // no place — never "nearby"
       if (reportedIds.includes(v.id)) return false
       if (v.status === 'closed') return false // closed venues aren't collectable
       if (filter === 'open') return v.is_open
@@ -631,7 +638,7 @@ function Collection({ items, venues, onRemove, onSubmit, onReRank }) {
   const hoods = [...new Set(collected.map(i => i.venue.neighborhood).filter(Boolean))]
   // Matchbooks per city, most first — replaces the single-city "NYC progress".
   const byCity = Object.entries(collected.reduce((m, i) => {
-    const c = i.venue.city || 'Unknown'; m[c] = (m[c] || 0) + 1; return m
+    const c = isKeepsake(i.venue) ? 'Keepsakes' : (i.venue.city || 'Unknown'); m[c] = (m[c] || 0) + 1; return m
   }, {})).sort((a, b) => b[1] - a[1])
 
   if (detail) {
@@ -709,7 +716,7 @@ function Collection({ items, venues, onRemove, onSubmit, onReRank }) {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginBottom: 12 }}>
-            {[{ n: collected.length, l: 'matchbooks' }, { n: new Set(collected.map(i => i.venue.city)).size, l: 'cities' }, { n: hoods.length, l: 'hoods' }, { n: collected.filter(i => i.score != null).length, l: 'ranked' }].map((s, i) => (
+            {[{ n: collected.length, l: 'matchbooks' }, { n: new Set(collected.map(i => i.venue.city).filter(Boolean)).size, l: 'cities' }, { n: hoods.length, l: 'hoods' }, { n: collected.filter(i => i.score != null).length, l: 'ranked' }].map((s, i) => (
               <div key={i} style={{ background: C.surface, borderRadius: 12, padding: '9px 10px', textAlign: 'center' }}>
                 <div style={{ fontSize: 20, fontWeight: 700, color: C.text }}>{s.n}</div>
                 <div style={{ fontSize: 9, color: C.muted, marginTop: 1, textTransform: 'uppercase', letterSpacing: .4, fontWeight: 600 }}>{s.l}</div>
@@ -807,13 +814,18 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
   const [manualAddress, setManualAddress] = useState('')
   const [manualErr, setManualErr] = useState('')
   const [manualAdding, setManualAdding] = useState(false)
+  // Keepsake entry — a matchbook that isn't from a place (wedding, event, one-off)
+  const [showKeepsake, setShowKeepsake] = useState(false)
+  const [keepsakeName, setKeepsakeName] = useState('')
+  const [keepsakeErr, setKeepsakeErr] = useState('')
+  const [keepsakeAdding, setKeepsakeAdding] = useState(false)
   const searchTimer = useRef(null)
 
-  // The manual-entry sheet covers the screen — hide the shell's tab bar with it.
+  // The manual-entry / keepsake sheets cover the screen — hide the tab bar with them.
   useEffect(() => {
-    onSheetOpenChange?.(showManual)
+    onSheetOpenChange?.(showManual || showKeepsake)
     return () => onSheetOpenChange?.(false)
-  }, [showManual]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [showManual, showKeepsake]) // eslint-disable-line react-hooks/exhaustive-deps
   const fileInputRef = useRef(null)
   const searchSeq = useRef(0)        // guards against out-of-order search responses
   const sessionRef = useRef('')      // Search Box billing session (suggest + retrieve)
@@ -1165,6 +1177,59 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
     setManualAdding(false)
   }
 
+  // Keepsake: a matchbook that isn't from a place (wedding, event, one-off).
+  // Modeled as a venue row with kind='keepsake' and no real location, so the
+  // whole collect/rank pipeline works unchanged — but it NEVER appears on the
+  // map, in the nearby list, or on shared leaderboards. Each keepsake is its
+  // own row (deliberately no dedup — your wedding isn't anyone else's).
+  const handleAddKeepsake = async () => {
+    if (!user) return
+    const name = keepsakeName.trim()
+    if (!name) { setKeepsakeErr('Give it a name — e.g. “Sarah & Tom’s wedding”.'); return }
+    setKeepsakeAdding(true)
+    setKeepsakeErr('')
+    try {
+      const venueRow = {
+        name,
+        address: '',
+        neighborhood: null,
+        city: '', // venues.city is NOT NULL — empty string reads as "no city" everywhere
+        lat: 0,
+        lng: 0, // (0,0) + kind guard both exclude it from every location surface
+        type: 'Keepsake',
+        emoji: '✨',
+        bg_color: '#2E2440',
+        sources: ['Keepsake'],
+        created_by: user.id,
+        verified: false,
+        added_manually: true,
+        kind: 'keepsake',
+      }
+      let venue = null, inserted = false
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const { data, error } = await supabase.from('venues').insert(venueRow).select().single()
+        if (!error) { venue = data; inserted = true; break }
+        // pre-migration DBs: strip columns they don't have yet (the (0,0) guard
+        // still keeps the row off the map/list until migration 020 runs)
+        if (isMissingColumn(error) && 'kind' in venueRow) { delete venueRow.kind; continue }
+        if (isMissingColumn(error) && 'added_manually' in venueRow) { delete venueRow.added_manually; continue }
+        throw error
+      }
+      setPicked({ name, address: 'Keepsake', manual: true, keepsake: true })
+      try {
+        await collectVenue(venue)
+      } catch (collectErr) {
+        if (inserted) await supabase.from('venues').delete().eq('id', venue.id)
+        throw collectErr
+      }
+      setShowKeepsake(false)
+    } catch (e) {
+      console.error(e)
+      setKeepsakeErr(e.message || 'Couldn’t add it. Try again.')
+    }
+    setKeepsakeAdding(false)
+  }
+
   // "Skip for now" from the step-3 confirmation: the spot stays UNRANKED
   // (score null) — no invented median position. It waits in Rankings → Mine's
   // "Unranked" section with a Rank button, so it's never stranded.
@@ -1315,8 +1380,12 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
 
             {/* Manual-entry escape hatch (spec §2) — closed/missing venues */}
             <button onClick={() => { setManualName(query.trim()); setManualAddress(''); setManualErr(''); setShowManual(true) }}
-              style={{ width: '100%', padding: 13, border: `1.5px dashed ${C.borderStr}`, borderRadius: 13, background: 'transparent', color: C.text, fontSize: 13, fontWeight: 700, cursor: 'pointer', marginBottom: 16 }}>
+              style={{ width: '100%', padding: 13, border: `1.5px dashed ${C.borderStr}`, borderRadius: 13, background: 'transparent', color: C.text, fontSize: 13, fontWeight: 700, cursor: 'pointer', marginBottom: 10 }}>
               Can't find it? Add it by address
+            </button>
+            <button onClick={() => { setKeepsakeName(query.trim()); setKeepsakeErr(''); setShowKeepsake(true) }}
+              style={{ width: '100%', padding: 13, border: `1.5px dashed ${C.borderStr}`, borderRadius: 13, background: 'transparent', color: C.text, fontSize: 13, fontWeight: 700, cursor: 'pointer', marginBottom: 16 }}>
+              ✨ Not from a place? Add a keepsake
             </button>
 
             {addErr && (
@@ -1331,10 +1400,12 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
         {step === 3 && (
           <div style={{ textAlign: 'center', padding: '20px 0' }}>
             <div style={{ fontSize: 64, marginBottom: 16 }}>{alreadyHave ? '✓' : '🔥'}</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: C.text, letterSpacing: '-.4px', marginBottom: 8 }}>{alreadyHave ? 'You already have this one.' : "It's on the map."}</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.text, letterSpacing: '-.4px', marginBottom: 8 }}>{alreadyHave ? 'You already have this one.' : picked?.keepsake ? "It's in your collection." : "It's on the map."}</div>
             <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, marginBottom: 24 }}>
               {alreadyHave
                 ? <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is already in your collection — no need to add it twice.</>
+                : picked?.keepsake
+                ? <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is saved as a keepsake — yours to rank, never on the map.</>
                 : <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is live and in your collection. Everyone nearby can find it.</>}
             </div>
             {needsRanking ? (
@@ -1373,6 +1444,27 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
 
             {manualErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, lineHeight: 1.4 }}>{manualErr}</div>}
             <PrimaryBtn onClick={handleAddManual} disabled={manualAdding}>{manualAdding ? 'Adding…' : 'Continue'}</PrimaryBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Keepsake bottom sheet — matchbooks that aren't from a place */}
+      {showKeepsake && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 30, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={() => !keepsakeAdding && setShowKeepsake(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+          <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px', maxHeight: '88%', overflowY: 'auto', boxShadow: '0 -6px 24px rgba(0,0,0,0.18)' }}>
+            <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
+            <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 6 }}>✨ Add a keepsake</div>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 18 }}>
+              For matchbooks that aren't from a place — a wedding, a party, a one-off. It joins your collection and rankings, but never appears on the map or leaderboards.
+            </div>
+
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.5px', marginBottom: 7 }}>WHAT'S IT FROM?</div>
+            <input value={keepsakeName} onChange={e => setKeepsakeName(e.target.value)} placeholder="e.g. Sarah & Tom's wedding" autoCapitalize="words" maxLength={80}
+              style={{ width: '100%', padding: '13px 14px', border: `1.5px solid ${C.border}`, borderRadius: 13, background: C.card, color: C.text, fontSize: 15, fontWeight: 500, outline: 'none', marginBottom: 18 }} />
+
+            {keepsakeErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, lineHeight: 1.4 }}>{keepsakeErr}</div>}
+            <PrimaryBtn onClick={handleAddKeepsake} disabled={keepsakeAdding}>{keepsakeAdding ? 'Adding…' : 'Add to my collection'}</PrimaryBtn>
           </div>
         </div>
       )}
@@ -1580,7 +1672,7 @@ function ComparisonFlow({ newVenue, newPhoto, rankedItems, user, onDone, initial
           <div style={{ position: 'absolute', top: -13, left: '50%', transform: 'translateX(-50%)', background: C.amberBg, border: `1.5px solid ${C.amberBd}`, borderRadius: 99, padding: '3px 16px', fontSize: 11, fontWeight: 800, color: C.amber, letterSpacing: '.8px', whiteSpace: 'nowrap' }}>{reRank ? 'THIS SPOT' : 'NEW'}</div>
           {avatar(newPhoto, '#1A1918', newIni)}
           <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 4, textAlign: 'center' }}>{newVenue.name}</div>
-          <div style={{ fontSize: 13, color: C.sec }}>{newVenue.neighborhood || newVenue.city || 'NYC'}</div>
+          <div style={{ fontSize: 13, color: C.sec }}>{newVenue.neighborhood || newVenue.city || (isKeepsake(newVenue) ? 'Keepsake' : '')}</div>
         </div>
 
         <div style={{ fontSize: 13, fontWeight: 700, color: C.muted, letterSpacing: '1px', marginBottom: 14 }}>VS</div>
@@ -1687,7 +1779,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
 
   const friendsRanked = (friendsRows || [])
     .map(r => ({ ...r, venue: venueMap[r.venue_id] }))
-    .filter(r => r.venue)
+    .filter(r => r.venue && !isKeepsake(r.venue))
     .map((r, idx) => ({ ...r, rank: idx + 1 }))
 
   // Cities to switch between = the real cities present in the venue set, busiest
@@ -1724,8 +1816,8 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
     return () => { cancelled = true }
   }, [tab])
 
-  const cityRanked = (cityRows || []).map(r => ({ ...r, venue: venueMap[r.venue_id] })).filter(r => r.venue).map((r, idx) => ({ ...r, rank: idx + 1 }))
-  const worldRanked = (worldRows || []).map(r => ({ ...r, venue: venueMap[r.venue_id] })).filter(r => r.venue).map((r, idx) => ({ ...r, rank: idx + 1 }))
+  const cityRanked = (cityRows || []).map(r => ({ ...r, venue: venueMap[r.venue_id] })).filter(r => r.venue && !isKeepsake(r.venue)).map((r, idx) => ({ ...r, rank: idx + 1 }))
+  const worldRanked = (worldRows || []).map(r => ({ ...r, venue: venueMap[r.venue_id] })).filter(r => r.venue && !isKeepsake(r.venue)).map((r, idx) => ({ ...r, rank: idx + 1 }))
 
   // Pale medal fills with dark, hue-matched digits (matches the mockup).
   const rankCircle = (n) => ({
@@ -1790,7 +1882,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 15, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
-                    <div style={{ fontSize: 12, color: C.muted }}>{item.venue.neighborhood || item.venue.city}</div>
+                    <div style={{ fontSize: 12, color: C.muted }}>{item.venue.neighborhood || item.venue.city || (isKeepsake(item.venue) ? 'Keepsake' : '')}</div>
                   </div>
                   <div style={{ fontSize: 18, fontWeight: 700, color: C.amber, flexShrink: 0 }}>{Number(item.score).toFixed(1)}</div>
                   <button onClick={() => setActions(item)} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: '4px 2px', fontSize: 18, flexShrink: 0, letterSpacing: '.5px' }}>···</button>
@@ -1811,7 +1903,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 15, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
-                        <div style={{ fontSize: 12, color: C.muted }}>{item.venue.neighborhood || item.venue.city}</div>
+                        <div style={{ fontSize: 12, color: C.muted }}>{item.venue.neighborhood || item.venue.city || (isKeepsake(item.venue) ? 'Keepsake' : '')}</div>
                       </div>
                       <button onClick={() => onReRank?.(item)}
                         style={{ flexShrink: 0, fontSize: 12.5, fontWeight: 700, padding: '7px 16px', borderRadius: 99, border: 'none', background: C.amber, color: '#fff', cursor: 'pointer' }}>
@@ -1922,7 +2014,7 @@ function ProfileScreen({ user, displayName, collection, onSignOut, onDeleteAccou
     if (err) setDeleteErr('Couldn’t delete your account — check your connection and try again.')
   }
   const byCity = Object.entries(collection.filter(i => i.venue).reduce((m, i) => {
-    const c = i.venue.city || 'Unknown'; m[c] = (m[c] || 0) + 1; return m
+    const c = isKeepsake(i.venue) ? 'Keepsakes' : (i.venue.city || 'Unknown'); m[c] = (m[c] || 0) + 1; return m
   }, {})).sort((a, b) => b[1] - a[1])
   const name = displayName || user.user_metadata?.display_name || user.email?.split('@')[0] || 'Collector'
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
@@ -2028,7 +2120,7 @@ function ProfileScreen({ user, displayName, collection, onSignOut, onDeleteAccou
           )}
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginBottom: 14 }}>
-            {[{ n: collection.length, l: 'matchbooks' }, { n: new Set(collection.map(i => i.venue?.city)).size, l: 'cities' }, { n: collection.filter(i => i.score != null).length, l: 'ranked' }].map((s, i) => (
+            {[{ n: collection.length, l: 'matchbooks' }, { n: new Set(collection.map(i => i.venue?.city).filter(Boolean)).size, l: 'cities' }, { n: collection.filter(i => i.score != null).length, l: 'ranked' }].map((s, i) => (
               <div key={i} style={{ background: C.surface, borderRadius: 12, padding: '10px 12px', textAlign: 'center' }}>
                 <div style={{ fontSize: 20, fontWeight: 700, color: C.text }}>{s.n}</div>
                 <div style={{ fontSize: 9, color: C.muted, textTransform: 'uppercase', letterSpacing: .4, fontWeight: 600, marginTop: 1 }}>{s.l}</div>
