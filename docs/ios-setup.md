@@ -110,3 +110,17 @@ as before — the native app only updates when you rebuild it.)
 - **App Store review submission** — screenshots, description, age rating, and the App
   Privacy labels (declare Email, Photos, Name, and **Location (Precise)** — all "App
   Functionality," none for tracking). Privacy policy URL: `https://phillumeni.vercel.app/privacy.html`.
+
+## ⚠️ BEFORE EVERY ARCHIVE — one command
+
+The native app ships a COPY of the web build (ios/App/App/public). It only
+updates when you sync it — archiving without syncing ships STALE code (this
+bit us: builds 2–3 shipped July-6 code). From the repo root, always:
+
+```
+npm run ios
+```
+
+That builds the web app, syncs it into the iOS project, and opens Xcode.
+Then archive as usual.
+

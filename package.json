@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "ios": "vite build && cap sync ios && cap open ios"
   },
   "dependencies": {
     "@capacitor/cli": "^8.4.1",
