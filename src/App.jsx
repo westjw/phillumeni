@@ -261,7 +261,11 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
           },
           paint: { 'text-color': '#FFFFFF' },
         })
-        const pinColor = ['case', ['==', ['get', 'closed'], 1], '#9C9990', '#1A9470']
+        // grey = closed, amber = already in your collection, green = out there to grab
+        const pinColor = ['case',
+          ['==', ['get', 'closed'], 1], '#9C9990',
+          ['==', ['get', 'collected'], 1], '#C87B0A',
+          '#1A9470']
         map.addLayer({
           id: 'pins', type: 'circle', source: 'venues',
           filter: ['!', ['has', 'point_count']],
@@ -340,6 +344,7 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
       if (filter === 'multi') return (v.sources || []).length >= 2
       return true
     })
+    const collectedSet = new Set(collectionIds)
     venueByIdRef.current = new Map(visible.map(v => [v.id, v]))
     pointsRef.current = visible.map(v => [Number(v.lng), Number(v.lat)])
     map.getSource('venues').setData({
@@ -347,7 +352,11 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
       features: visible.map(v => ({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [Number(v.lng), Number(v.lat)] },
-        properties: { vid: v.id, closed: v.status === 'closed' ? 1 : 0 },
+        properties: {
+          vid: v.id,
+          closed: v.status === 'closed' ? 1 : 0,
+          collected: collectedSet.has(v.id) ? 1 : 0, // found ones turn amber
+        },
       })),
     })
 
@@ -357,7 +366,7 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
     if (geoFailedRef.current && !didFitRef.current && visible.length > 0) {
       fitToPins()
     }
-  }, [venues, reportedIds, filter, mapReady])
+  }, [venues, collectionIds, reportedIds, filter, mapReady])
 
   // Selection = a filter change on the highlight layer — no data churn at all.
   useEffect(() => {
@@ -370,14 +379,51 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
 }
 
 // ─── EXPLORE SCREEN ──────────────────────────────────────
-function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeReport, onSubmit, venuesError, onRetry, onSheetOpenChange }) {
+function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeReport, onSubmit, venuesError, onRetry, onSheetOpenChange, user, onRank }) {
   const [selected, setSelected] = useState(null)
   const [filter, setFilter] = useState('all')
   const [reporting, setReporting] = useState(null) // venue being reported
   const [venuePhotos, setVenuePhotos] = useState([]) // anonymized gallery for the open venue
   const [collectErr, setCollectErr] = useState('')
   const [mapCenter, setMapCenter] = useState(NYC) // where the map is looking (drives "nearby")
+  // Post-collect follow-up: right after "Got it", offer photos + ranking in place.
+  const [postCollect, setPostCollect] = useState(false)
+  const [pcPhotos, setPcPhotos] = useState([])
+  const [pcBusy, setPcBusy] = useState(false)
+  const [pcErr, setPcErr] = useState('')
+  const pcFileRef = useRef(null)
   const reportedIds = useMemo(() => reported.map(r => r.venue_id), [reported])
+
+  // Fresh venue, fresh follow-up state.
+  useEffect(() => { setPostCollect(false); setPcPhotos([]); setPcErr(''); setPcBusy(false) }, [selected?.id])
+
+  const addPostCollectPhotos = async (e) => {
+    const files = [...(e.target.files || [])]
+    e.target.value = ''
+    if (!files.length || !user || !selected) return
+    setPcBusy(true)
+    setPcErr('')
+    try {
+      const urls = []
+      for (const f of files.slice(0, 6)) {
+        const blob = await downscaleImage(f, 1600, 0.8)
+        const path = `${user.id}/${crypto.randomUUID()}.jpg`
+        const { error: upErr } = await supabase.storage.from('matchbooks').upload(path, blob, { contentType: 'image/jpeg', upsert: false })
+        if (upErr) throw upErr
+        urls.push(supabase.storage.from('matchbooks').getPublicUrl(path).data.publicUrl)
+      }
+      const merged = [...pcPhotos, ...urls]
+      const { error } = await supabase.from('collections')
+        .update({ photos: merged, photo_url: merged[0] })
+        .eq('user_id', user.id).eq('venue_id', selected.id)
+      if (error) throw error
+      setPcPhotos(merged)
+    } catch (err) {
+      console.error('Post-collect photo upload failed', err)
+      setPcErr('Couldn’t upload — try again.')
+    }
+    setPcBusy(false)
+  }
 
   // Tell the shell a sheet is open so it can hide the tab bar (sheet covers it).
   useEffect(() => {
@@ -485,17 +531,36 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
             ) : reportedIds.includes(selected.id) ? (
               <div style={{ padding: 12, background: C.redBg, borderRadius: 12, fontSize: 13, color: C.red, textAlign: 'center', fontWeight: 500 }}>Reported as unavailable</div>
             ) : collectionIds.includes(selected.id) ? (
-              <>
-                <div style={{ padding: 12, background: C.amberBg, borderRadius: 12, fontSize: 13, color: C.amber, textAlign: 'center', fontWeight: 600, marginBottom: 8 }}>
-                  <i className="ti ti-check" style={{ fontSize: 13, marginRight: 5 }} />You've collected this one
-                </div>
-                <OutlineBtn onClick={() => setReporting(selected)} color={C.red}>
-                  <i className="ti ti-flag" style={{ fontSize: 12, marginRight: 5 }} />Report a problem
-                </OutlineBtn>
-              </>
+              postCollect ? (
+                // Fresh collect → offer the natural next steps in place, both optional.
+                <>
+                  <div style={{ padding: 12, background: C.amberBg, borderRadius: 12, fontSize: 13, color: C.amber, textAlign: 'center', fontWeight: 600, marginBottom: 10 }}>
+                    <i className="ti ti-check" style={{ fontSize: 13, marginRight: 5 }} />Added to your collection
+                  </div>
+                  <input ref={pcFileRef} type="file" accept="image/*" multiple onChange={addPostCollectPhotos} style={{ display: 'none' }} />
+                  <PrimaryBtn onClick={() => !pcBusy && pcFileRef.current?.click()} style={{ marginBottom: 8, background: pcBusy ? C.border : C.dark }}>
+                    <i className="ti ti-camera" style={{ fontSize: 14, marginRight: 6 }} />
+                    {pcBusy ? 'Uploading…' : pcPhotos.length ? `${pcPhotos.length} photo${pcPhotos.length > 1 ? 's' : ''} added — add more` : 'Add matchbook photos'}
+                  </PrimaryBtn>
+                  {pcErr && <div style={{ fontSize: 12, color: C.red, margin: '0 0 8px', lineHeight: 1.4 }}>{pcErr}</div>}
+                  <PrimaryBtn onClick={() => onRank?.(selected, pcPhotos)} style={{ marginBottom: 8, background: C.amber }}>
+                    <i className="ti ti-trophy" style={{ fontSize: 14, marginRight: 6 }} />Rank it now
+                  </PrimaryBtn>
+                  <OutlineBtn onClick={() => setPostCollect(false)}>Done — rank it later</OutlineBtn>
+                </>
+              ) : (
+                <>
+                  <div style={{ padding: 12, background: C.amberBg, borderRadius: 12, fontSize: 13, color: C.amber, textAlign: 'center', fontWeight: 600, marginBottom: 8 }}>
+                    <i className="ti ti-check" style={{ fontSize: 13, marginRight: 5 }} />You've collected this one
+                  </div>
+                  <OutlineBtn onClick={() => setReporting(selected)} color={C.red}>
+                    <i className="ti ti-flag" style={{ fontSize: 12, marginRight: 5 }} />Report a problem
+                  </OutlineBtn>
+                </>
+              )
             ) : (
               <>
-                <PrimaryBtn onClick={async () => { const ok = await onCollect(selected); if (ok) setSelected(null); else setCollectErr('Couldn’t add it — check your connection and try again.') }} style={{ marginBottom: 8 }}>Got it — add to collection</PrimaryBtn>
+                <PrimaryBtn onClick={async () => { const ok = await onCollect(selected); if (ok) setPostCollect(true); else setCollectErr('Couldn’t add it — check your connection and try again.') }} style={{ marginBottom: 8 }}>Got it — add to collection</PrimaryBtn>
                 {collectErr && <div style={{ fontSize: 12, color: C.red, margin: '0 0 8px', lineHeight: 1.4 }}>{collectErr}</div>}
                 <OutlineBtn onClick={() => setReporting(selected)} color={C.red}>
                   <i className="ti ti-flag" style={{ fontSize: 12, marginRight: 5 }} />Report a problem
@@ -2978,6 +3043,7 @@ export default function App() {
       venue: item.venue,
       photo: item.photo_url || (item.photos && item.photos[0]) || null,
       score: item.score,
+      from: tab, // return the user to wherever they started ranking from
     })
   }
 
@@ -3057,7 +3123,7 @@ export default function App() {
           rankedItems={rankedItems}
           user={user}
           reRank={reRankTarget.score != null} // unranked spots get first-time "Where does this rank?" copy
-          onDone={() => { setReRankTarget(null); refreshCollection(); setTab('rankings') }}
+          onDone={() => { const back = reRankTarget.from || 'rankings'; setReRankTarget(null); refreshCollection(); setTab(back) }}
         />
       ) : showSubmit ? (
         <Submit
@@ -3103,6 +3169,14 @@ export default function App() {
               venuesError={venuesError}
               onRetry={loadVenues}
               onSheetOpenChange={setSheetOpen}
+              user={user}
+              onRank={(venue, photos = []) => startReRank({
+                venue,
+                venue_id: venue.id,
+                photo_url: photos[0] || null,
+                photos,
+                score: null, // fresh collect — first-time ranking copy
+              })}
             />
           )}
           {tab === 'rankings' && (
