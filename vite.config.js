@@ -3,6 +3,11 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  // Baked in at build time and shown in Profile — the ground truth for "which
+  // code am I actually running?" (a stale native bundle hid for a week without it)
+  define: {
+    __BUILD_STAMP__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC'),
+  },
   plugins: [
     react(),
     VitePWA({

@@ -2163,6 +2163,7 @@ function ProfileScreen({ user, displayName, collection, onSignOut, onDeleteAccou
 
         <div style={{ padding: '22px 16px 8px', textAlign: 'center' }}>
           <a href="/privacy.html" target="_blank" rel="noopener noreferrer" style={{ fontSize: 12.5, color: C.muted, textDecoration: 'underline' }}>Privacy Policy</a>
+          <div style={{ fontSize: 10.5, color: C.muted, marginTop: 10, letterSpacing: '.3px' }}>build {__BUILD_STAMP__}</div>
           <button onClick={() => { setDeleteErr(''); setDeleteConfirmText(''); setConfirmDelete(true) }}
             style={{ display: 'block', margin: '16px auto 0', background: 'none', border: 'none', padding: 4, color: C.red, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
             Delete account
