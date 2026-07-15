@@ -628,8 +628,104 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
   )
 }
 
+// Full-page matchbook detail (photos, tags, rank / remove) — shared by
+// Collection tiles and Rankings "Mine" rows, so both paths land on the
+// same page. `item` is a collection row with `venue` attached.
+function MatchbookDetail({ item, title, backLabel, onBack, onReRank, onRemove, onAddPhotos }) {
+  const v = item.venue
+  // Local copy so the page updates in place as photos upload; the collection
+  // state itself is updated by onAddPhotos up in App.
+  const [detailPhotos, setDetailPhotos] = useState(
+    (item.photos && item.photos.length) ? item.photos : (item.photo_url ? [item.photo_url] : [])
+  )
+  const [photoBusy, setPhotoBusy] = useState(false)
+  const [photoErr, setPhotoErr] = useState('')
+  const fileRef = useRef(null)
+
+  const addPhotos = async (e) => {
+    const files = [...(e.target.files || [])]
+    e.target.value = ''
+    if (!files.length || !onAddPhotos) return
+    setPhotoBusy(true)
+    setPhotoErr('')
+    try {
+      const merged = await onAddPhotos(item, files)
+      if (merged) setDetailPhotos(merged)
+    } catch (err) {
+      console.error('Add photos failed', err)
+      setPhotoErr('Couldn’t upload — try again.')
+    }
+    setPhotoBusy(false)
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      <SBar title={title} />
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div style={{ padding: '10px 16px 0' }}>
+          <button onClick={onBack} style={{ background: 'none', border: 'none', fontSize: 13, color: C.amber, cursor: 'pointer', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4, padding: '4px 0 12px' }}>
+            <i className="ti ti-arrow-left" style={{ fontSize: 13 }} /> {backLabel}
+          </button>
+        </div>
+        {detailPhotos.length ? (
+          <img src={detailPhotos[0]} alt="Your matchbook" style={{ width: '100%', height: 210, objectFit: 'cover', display: 'block' }} />
+        ) : (
+          <div style={{ width: '100%', height: 210, background: v.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 72 }}>{v.emoji}</div>
+        )}
+        <div style={{ padding: '16px 16px 28px' }}>
+          <div style={{ fontSize: 19, fontWeight: 700, color: C.text, letterSpacing: '-.3px', marginBottom: 4 }}>{v.name}</div>
+          <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>{v.address}</div>
+          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 14 }}>
+            <Tag label={`Collected ${new Date(item.collected_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`} bg={C.greenBg} color={C.green} />
+            <Tag label={v.type || 'Spot'} bg={C.surface} color={C.sec} />
+            {v.status === 'closed' && <Tag label="Closed — collector's item" bg={C.redBg} color={C.red} />}
+          </div>
+          {onAddPhotos && <input ref={fileRef} type="file" accept="image/*" multiple onChange={addPhotos} style={{ display: 'none' }} />}
+          {detailPhotos.length > 0 && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+              {detailPhotos.map((url, i) => (
+                <img key={i} src={url} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, border: i === 0 ? `2px solid ${C.amber}` : `0.5px solid ${C.border}` }} />
+              ))}
+              {onAddPhotos && (
+                <button onClick={() => !photoBusy && fileRef.current?.click()}
+                  style={{ width: 64, height: 64, borderRadius: 8, border: `1.5px dashed ${C.borderStr}`, background: 'none', color: C.muted, fontSize: 22, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {photoBusy ? '…' : '+'}
+                </button>
+              )}
+            </div>
+          )}
+          {detailPhotos.length === 0 && (
+            onAddPhotos ? (
+              <button onClick={() => !photoBusy && fileRef.current?.click()}
+                style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: C.surface, border: `1.5px dashed ${C.borderStr}`, borderRadius: 12, padding: '12px', fontSize: 13, fontWeight: 600, color: C.sec, cursor: 'pointer', marginBottom: 14 }}>
+                <i className="ti ti-camera" style={{ fontSize: 14 }} />
+                {photoBusy ? 'Uploading…' : 'Add matchbook photos'}
+              </button>
+            ) : (
+              <div style={{ background: C.surface, borderRadius: 12, padding: '10px 12px', fontSize: 12, color: C.muted, marginBottom: 14, lineHeight: 1.5 }}>
+                <i className="ti ti-camera" style={{ fontSize: 12, marginRight: 6 }} />No photos for this one yet
+              </div>
+            )
+          )}
+          {photoErr && <div style={{ fontSize: 12, color: C.red, margin: '-6px 0 12px', lineHeight: 1.4 }}>{photoErr}</div>}
+          {onReRank && (
+            <button
+              onClick={() => onReRank({ ...item, photos: detailPhotos, photo_url: detailPhotos[0] || item.photo_url })}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: C.amber, color: '#fff', border: 'none', borderRadius: 12, padding: '13px', fontSize: 14, fontWeight: 700, cursor: 'pointer', marginBottom: 10 }}
+            >
+              <i className="ti ti-trophy" style={{ fontSize: 15 }} />
+              {item.score == null ? 'Rank this spot' : 'Re-rank this spot'}
+            </button>
+          )}
+          {onRemove && <OutlineBtn onClick={() => onRemove(item.id)} color={C.red}>Remove from collection</OutlineBtn>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── COLLECTION SCREEN ───────────────────────────────────
-function Collection({ items, venues, onRemove, onSubmit, onReRank }) {
+function Collection({ items, venues, onRemove, onSubmit, onReRank, onAddPhotos }) {
   const [view, setView] = useState('grid')
   const [detail, setDetail] = useState(null)
 
@@ -642,55 +738,16 @@ function Collection({ items, venues, onRemove, onSubmit, onReRank }) {
   }, {})).sort((a, b) => b[1] - a[1])
 
   if (detail) {
-    const v = detail.venue
-    const detailPhotos = (detail.photos && detail.photos.length) ? detail.photos : (detail.photo_url ? [detail.photo_url] : [])
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-        <SBar title="Collection" />
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          <div style={{ padding: '10px 16px 0' }}>
-            <button onClick={() => setDetail(null)} style={{ background: 'none', border: 'none', fontSize: 13, color: C.amber, cursor: 'pointer', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4, padding: '4px 0 12px' }}>
-              <i className="ti ti-arrow-left" style={{ fontSize: 13 }} /> Collection
-            </button>
-          </div>
-          {detailPhotos.length ? (
-            <img src={detailPhotos[0]} alt="Your matchbook" style={{ width: '100%', height: 210, objectFit: 'cover', display: 'block' }} />
-          ) : (
-            <div style={{ width: '100%', height: 210, background: v.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 72 }}>{v.emoji}</div>
-          )}
-          <div style={{ padding: '16px 16px 28px' }}>
-            <div style={{ fontSize: 19, fontWeight: 700, color: C.text, letterSpacing: '-.3px', marginBottom: 4 }}>{v.name}</div>
-            <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>{v.address}</div>
-            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 14 }}>
-              <Tag label={`Collected ${new Date(detail.collected_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`} bg={C.greenBg} color={C.green} />
-              <Tag label={v.type || 'Spot'} bg={C.surface} color={C.sec} />
-              {v.status === 'closed' && <Tag label="Closed — collector's item" bg={C.redBg} color={C.red} />}
-            </div>
-            {detailPhotos.length > 1 && (
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
-                {detailPhotos.map((url, i) => (
-                  <img key={i} src={url} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, border: i === 0 ? `2px solid ${C.amber}` : `0.5px solid ${C.border}` }} />
-                ))}
-              </div>
-            )}
-            {detailPhotos.length === 0 && (
-              <div style={{ background: C.surface, borderRadius: 12, padding: '10px 12px', fontSize: 12, color: C.muted, marginBottom: 14, lineHeight: 1.5 }}>
-                <i className="ti ti-camera" style={{ fontSize: 12, marginRight: 6 }} />No photos for this one yet
-              </div>
-            )}
-            {onReRank && (
-              <button
-                onClick={() => { const it = detail; setDetail(null); onReRank(it) }}
-                style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: C.amber, color: '#fff', border: 'none', borderRadius: 12, padding: '13px', fontSize: 14, fontWeight: 700, cursor: 'pointer', marginBottom: 10 }}
-              >
-                <i className="ti ti-trophy" style={{ fontSize: 15 }} />
-                {detail.score == null ? 'Rank this spot' : 'Re-rank this spot'}
-              </button>
-            )}
-            <OutlineBtn onClick={() => { onRemove(detail.id); setDetail(null) }} color={C.red}>Remove from collection</OutlineBtn>
-          </div>
-        </div>
-      </div>
+      <MatchbookDetail
+        item={detail}
+        title="Collection"
+        backLabel="Collection"
+        onBack={() => setDetail(null)}
+        onReRank={onReRank ? (it) => { setDetail(null); onReRank(it) } : null}
+        onRemove={(id) => { onRemove(id); setDetail(null) }}
+        onAddPhotos={onAddPhotos}
+      />
     )
   }
 
@@ -1736,10 +1793,11 @@ function RankActionsSheet({ item, onReRank, onUnrank, onReport, onClose }) {
 }
 
 // ─── RANKINGS SCREEN ─────────────────────────────────────
-function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank, onSheetOpenChange }) {
+function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank, onRemove, onAddPhotos, onSheetOpenChange }) {
   const [tab, setTab] = useState('mine')
   const [reporting, setReporting] = useState(null) // venue being reported
   const [actions, setActions] = useState(null)     // ranked item whose ··· menu is open
+  const [detail, setDetail] = useState(null)       // Mine row opened as a matchbook page
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
 
   useEffect(() => {
@@ -1849,6 +1907,21 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
   )
   const collectorsLabel = (n) => `${n} ${n === 1 ? 'collector' : 'collectors'}`
 
+  // Tapping a Mine row opens the same matchbook page Collection uses — with
+  // the rank/re-rank button — instead of burying re-rank behind the ··· menu.
+  if (detail) {
+    return (
+      <MatchbookDetail
+        item={detail}
+        backLabel="Rankings"
+        onBack={() => setDetail(null)}
+        onReRank={onReRank ? (it) => { setDetail(null); onReRank(it) } : null}
+        onRemove={onRemove ? (id) => { onRemove(id); setDetail(null) } : null}
+        onAddPhotos={onAddPhotos}
+      />
+    )
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}>
       <SBar />
@@ -1875,7 +1948,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
           ) : (
             <div style={{ padding: '4px 16px' }}>
               {ranked.map(item => (
-                <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}` }}>
+                <div key={item.id} onClick={() => setDetail(item)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
                   <div style={rankCircle(item.rank)}>{item.rank}</div>
                   <div style={{ width: 42, height: 42, borderRadius: 11, background: item.venue.bg_color || C.dark, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0, letterSpacing: '-.2px' }}>
                     {venueInitials(item.venue.name)}
@@ -1885,7 +1958,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
                     <div style={{ fontSize: 12, color: C.muted }}>{item.venue.neighborhood || item.venue.city || (isKeepsake(item.venue) ? 'Keepsake' : '')}</div>
                   </div>
                   <div style={{ fontSize: 18, fontWeight: 700, color: C.amber, flexShrink: 0 }}>{Number(item.score).toFixed(1)}</div>
-                  <button onClick={() => setActions(item)} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: '4px 2px', fontSize: 18, flexShrink: 0, letterSpacing: '.5px' }}>···</button>
+                  <button onClick={(e) => { e.stopPropagation(); setActions(item) }} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: '4px 2px', fontSize: 18, flexShrink: 0, letterSpacing: '.5px' }}>···</button>
                 </div>
               ))}
               {unranked.length > 0 && (
@@ -1897,7 +1970,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
                     Collected but not placed yet — rank them to add them to your list.
                   </div>
                   {unranked.map(item => (
-                    <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}` }}>
+                    <div key={item.id} onClick={() => setDetail(item)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
                       <div style={{ width: 42, height: 42, borderRadius: 11, background: item.venue.bg_color || C.dark, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0, letterSpacing: '-.2px', opacity: 0.75 }}>
                         {venueInitials(item.venue.name)}
                       </div>
@@ -1905,7 +1978,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
                         <div style={{ fontSize: 15, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
                         <div style={{ fontSize: 12, color: C.muted }}>{item.venue.neighborhood || item.venue.city || (isKeepsake(item.venue) ? 'Keepsake' : '')}</div>
                       </div>
-                      <button onClick={() => onReRank?.(item)}
+                      <button onClick={(e) => { e.stopPropagation(); onReRank?.(item) }}
                         style={{ flexShrink: 0, fontSize: 12.5, fontWeight: 700, padding: '7px 16px', borderRadius: 99, border: 'none', background: C.amber, color: '#fff', cursor: 'pointer' }}>
                         Rank
                       </button>
@@ -3004,8 +3077,40 @@ export default function App() {
   }
 
   const handleRemoveFromCollection = async (collectionId) => {
-    await supabase.from('collections').delete().eq('id', collectionId)
+    const { error } = await supabase.from('collections').delete().eq('id', collectionId)
+    // Only drop it locally if the DB really deleted it — otherwise it would
+    // vanish from every screen and silently reappear on the next refresh.
+    if (error) { console.error('Remove from collection failed', error); return }
     setCollection(prev => prev.filter(i => i.id !== collectionId))
+  }
+
+  // Add photos to a matchbook that's already collected (from its detail page) —
+  // same downscale → storage → collections update as the post-collect prompt.
+  // Returns the merged photo list so the open page can update in place.
+  const handleAddPhotos = async (item, files) => {
+    if (!user || !files.length) return null
+    // Merge into the row's CURRENT photos from the DB, not the caller's item —
+    // that item is a snapshot frozen at tap time (and post-collect uploads may
+    // not be in local state at all); merging into it would overwrite photos.
+    const { data: row, error: readErr } = await supabase.from('collections')
+      .select('photos, photo_url').eq('user_id', user.id).eq('venue_id', item.venue_id).single()
+    if (readErr) throw readErr
+    const existing = (row?.photos && row.photos.length) ? row.photos : (row?.photo_url ? [row.photo_url] : [])
+    const urls = []
+    for (const f of files.slice(0, 6)) {
+      const blob = await downscaleImage(f, 1600, 0.8)
+      const path = `${user.id}/${crypto.randomUUID()}.jpg`
+      const { error: upErr } = await supabase.storage.from('matchbooks').upload(path, blob, { contentType: 'image/jpeg', upsert: false })
+      if (upErr) throw upErr
+      urls.push(supabase.storage.from('matchbooks').getPublicUrl(path).data.publicUrl)
+    }
+    const merged = [...existing, ...urls]
+    const { error } = await supabase.from('collections')
+      .update({ photos: merged, photo_url: merged[0] })
+      .eq('user_id', user.id).eq('venue_id', item.venue_id)
+    if (error) throw error
+    setCollection(prev => prev.map(c => (c.venue_id === item.venue_id ? { ...c, photos: merged, photo_url: merged[0] } : c)))
+    return merged
   }
 
   const handleFlag = async (venueId) => {
@@ -3273,7 +3378,7 @@ export default function App() {
             />
           )}
           {tab === 'rankings' && (
-            <Rankings collection={collection} venues={venues} onFlag={handleFlag} onFakeReport={handleFakeReport} onReRank={startReRank} onUnrank={handleUnrank} onSheetOpenChange={setSheetOpen} />
+            <Rankings collection={collection} venues={venues} onFlag={handleFlag} onFakeReport={handleFakeReport} onReRank={startReRank} onUnrank={handleUnrank} onRemove={handleRemoveFromCollection} onAddPhotos={handleAddPhotos} onSheetOpenChange={setSheetOpen} />
           )}
           {tab === 'collection' && (
             <Collection
@@ -3282,6 +3387,7 @@ export default function App() {
               onRemove={handleRemoveFromCollection}
               onSubmit={() => setShowSubmit(true)}
               onReRank={startReRank}
+              onAddPhotos={handleAddPhotos}
             />
           )}
           {tab === 'profile' && (
