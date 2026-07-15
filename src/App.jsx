@@ -343,14 +343,16 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
     const map = mapRef.current
     if (!map || !mapReady || !map.getSource('venues')) return
 
+    const collectedSet = new Set(collectionIds)
     const visible = venues.filter(v => {
       if (isKeepsake(v)) return false // keepsakes have no place — never on the map
-      if (reportedIds.includes(v.id)) return false
+      // Hide venues the user reported — but never one they've COLLECTED (e.g.
+      // submitted with "this place has closed"): their own pin must not vanish.
+      if (reportedIds.includes(v.id) && !collectedSet.has(v.id)) return false
       if (filter === 'open') return v.is_open && v.status !== 'closed'
       if (filter === 'multi') return (v.sources || []).length >= 2
       return true
     })
-    const collectedSet = new Set(collectionIds)
     venueByIdRef.current = new Map(visible.map(v => [v.id, v]))
     pointsRef.current = visible.map(v => [Number(v.lng), Number(v.lat)])
     map.getSource('venues').setData({
@@ -456,7 +458,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
   const listed = venues
     .filter(v => {
       if (isKeepsake(v)) return false // no place — never "nearby"
-      if (reportedIds.includes(v.id)) return false
+      if (reportedIds.includes(v.id) && !collectionIds.includes(v.id)) return false
       if (v.status === 'closed') return false // closed venues aren't collectable
       if (filter === 'open') return v.is_open
       if (filter === 'multi') return (v.sources || []).length >= 2
@@ -535,8 +537,6 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
               <div style={{ padding: 12, background: C.surface, borderRadius: 12, fontSize: 13, color: C.sec, textAlign: 'center', fontWeight: 500, lineHeight: 1.5 }}>
                 This spot has closed — its matchbooks are now collector's items.
               </div>
-            ) : reportedIds.includes(selected.id) ? (
-              <div style={{ padding: 12, background: C.redBg, borderRadius: 12, fontSize: 13, color: C.red, textAlign: 'center', fontWeight: 500 }}>Reported as unavailable</div>
             ) : collectionIds.includes(selected.id) ? (
               postCollect ? (
                 // Fresh collect → offer the natural next steps in place, both optional.
@@ -565,6 +565,8 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
                   </OutlineBtn>
                 </>
               )
+            ) : reportedIds.includes(selected.id) ? (
+              <div style={{ padding: 12, background: C.redBg, borderRadius: 12, fontSize: 13, color: C.red, textAlign: 'center', fontWeight: 500 }}>Reported as unavailable</div>
             ) : (
               <>
                 <PrimaryBtn onClick={async () => { const ok = await onCollect(selected); if (ok) setPostCollect(true); else setCollectErr('Couldn’t add it — check your connection and try again.') }} style={{ marginBottom: 8 }}>Got it — add to collection</PrimaryBtn>
@@ -858,6 +860,8 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
   const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
   const [picked, setPicked] = useState(null)
+  const [placeClosed, setPlaceClosed] = useState(false) // "this place has closed" — collector's item
+  const [reportedClosed, setReportedClosed] = useState(false) // added-closed against a still-active venue (report pending)
   const [adding, setAdding] = useState(false)
   const [searchErr, setSearchErr] = useState('')
   const [addErr, setAddErr] = useState('')
@@ -977,6 +981,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
   const handleQueryChange = (q) => {
     setQuery(q)
     setPicked(null)
+    setPlaceClosed(false) // a new search is a new place — don't carry the closed flag over
     clearTimeout(searchTimer.current)
     searchTimer.current = setTimeout(() => searchVenues(q), 400)
   }
@@ -999,10 +1004,6 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
         }
       } else {
         venue = existing
-      }
-
-      if (venue?.status === 'closed') {
-        throw new Error('That spot is marked closed and can’t be collected.')
       }
 
       if (!venue) {
@@ -1034,6 +1035,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
           verified: false,
         }
         if (dedupOn) venueRow.mapbox_id = picked.mapbox_id
+        if (placeClosed) { venueRow.status = 'closed'; venueRow.closed_at = new Date().toISOString() }
 
         const { data: inserted, error: venueErr } = await supabase
           .from('venues').insert(venueRow).select().single()
@@ -1053,7 +1055,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
         }
       }
 
-      await collectVenue(venue)
+      await collectVenue(venue, placeClosed)
     } catch (e) {
       console.error(e)
       setAddErr(e.message || 'Something went wrong. Try again.')
@@ -1063,10 +1065,12 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
 
   // Collect a resolved venue into the user's collection, then trigger ranking.
   // Shared by the search path (handleAdd) and manual entry (handleAddManual).
-  const collectVenue = async (venue) => {
-    // Re-check the final venue (a create-race may have resolved to an auto-closed row).
-    if (venue?.status === 'closed') {
-      throw new Error('That spot is marked closed and can’t be collected.')
+  // closedByUser = the "This place has closed" toggle: it unlocks collecting an
+  // already-closed venue (the matchbook is a collector's item — you HAVE it,
+  // you're not going there) and files a closed-report on a still-active one.
+  const collectVenue = async (venue, closedByUser = false) => {
+    if (venue?.status === 'closed' && !closedByUser) {
+      throw new Error('That spot is marked closed. Turn on “This place has closed” to add its matchbook as a collector’s item.')
     }
 
     // Add to collection — capture the real row (serial id) and surface errors.
@@ -1136,8 +1140,21 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
       }
     }
 
+    // The user says a still-active spot has closed → file a "not available"
+    // report so it counts toward the community auto-close (3 distinct reports).
+    // Best-effort: their matchbook is already saved either way. The spot won't
+    // flip to closed until 3 collectors report it, so step 3 says "pending",
+    // NOT "collector's item" (that's only for an already/newly-closed row).
+    const reportPending = closedByUser && venue.status !== 'closed'
+    if (reportPending) {
+      supabase.from('reports')
+        .upsert({ user_id: user.id, venue_id: venue.id }, { onConflict: 'user_id,venue_id', ignoreDuplicates: true })
+        .then(({ error }) => { if (error) console.error('Closed report failed', error) })
+    }
+
     setAddedVenue(venue)
     setAlreadyHave(alreadyHave)
+    setReportedClosed(reportPending)
     // Offer ranking when the venue isn't the user's first ranked one and its
     // collection row currently has no score (newly added, or never ranked).
     setNeedsRanking(!isFirstRanked && !!savedRow && savedRow.score == null)
@@ -1203,9 +1220,9 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
         .gte('lng', lng - 0.02).lte('lng', lng + 0.02)
         .limit(1)
       if (dupes && dupes.length) venue = dupes[0]
-      if (venue?.status === 'closed') throw new Error('That spot is marked closed and can’t be collected.')
 
       if (!venue) {
+        if (placeClosed) { venueRow.status = 'closed'; venueRow.closed_at = new Date().toISOString() }
         // added_manually (007) may not be migrated — strip on a missing-column error.
         for (let attempt = 0; attempt < 2; attempt++) {
           const { data, error } = await supabase.from('venues').insert(venueRow).select().single()
@@ -1220,7 +1237,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
 
       setPicked({ name, address, manual: true })
       try {
-        await collectVenue(venue)
+        await collectVenue(venue, placeClosed)
       } catch (collectErr) {
         // Only roll back a venue WE just created (an existing/deduped one stays).
         if (inserted) await supabase.from('venues').delete().eq('id', venue.id)
@@ -1229,6 +1246,9 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
       setShowManual(false)
     } catch (e) {
       console.error(e)
+      // A failed manual add must not leave `picked` set to a mapbox_id-less
+      // object — that would arm a dead-end "Add" button back on step 2.
+      setPicked(null)
       setManualErr(e.message || 'Couldn’t add it. Try again.')
     }
     setManualAdding(false)
@@ -1282,6 +1302,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
       setShowKeepsake(false)
     } catch (e) {
       console.error(e)
+      setPicked(null) // same guard as manual — don't arm a dead-end step-2 Add
       setKeepsakeErr(e.message || 'Couldn’t add it. Try again.')
     }
     setKeepsakeAdding(false)
@@ -1299,6 +1320,21 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
       {[1, 2, 3].map(s => (
         <div key={s} style={{ height: 4, borderRadius: 2, width: s === step ? 28 : 12, background: s === step ? C.dark : s < step ? C.amber : C.border, transition: 'all .2s' }} />
       ))}
+    </div>
+  )
+
+  // "This place has closed" — shown once a venue is picked, and in the manual
+  // sheet (closed spots often vanish from search, so manual is their main path).
+  const closedToggle = (
+    <div onClick={() => setPlaceClosed(v => !v)}
+      style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 13px', border: `1.5px solid ${placeClosed ? C.amberBd : C.border}`, background: placeClosed ? C.amberBg : C.card, borderRadius: 13, cursor: 'pointer', marginBottom: 12, transition: 'all .15s' }}>
+      <div style={{ width: 20, height: 20, borderRadius: 6, border: `1.5px solid ${placeClosed ? C.amber : C.borderStr}`, background: placeClosed ? C.amber : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        {placeClosed && <i className="ti ti-check" style={{ fontSize: 13, color: '#fff' }} />}
+      </div>
+      <div>
+        <div style={{ fontSize: 13.5, fontWeight: 700, color: placeClosed ? C.amber : C.text }}>This place has closed</div>
+        <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.4 }}>Your matchbook becomes a collector's item, and we'll flag the spot as closed on the map.</div>
+      </div>
     </div>
   )
 
@@ -1413,7 +1449,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
                   // and make the row non-selectable so you can't re-submit it.
                   const mine = collectedMapboxIds.has(r.mapbox_id)
                   return (
-                    <div key={r.id} onClick={mine ? undefined : () => { setPicked(r); setQuery(r.name); setAddErr('') }}
+                    <div key={r.id} onClick={mine ? undefined : () => { setPicked(r); setQuery(r.name); setAddErr(''); setPlaceClosed(false) }}
                       style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '12px 14px', borderBottom: i < results.length - 1 ? `0.5px solid ${C.border}` : 'none', cursor: mine ? 'default' : 'pointer', background: picked?.id === r.id ? C.greenBg : 'transparent', opacity: mine ? 0.6 : 1, transition: 'background .1s' }}>
                       <div style={{ width: 38, height: 38, borderRadius: 10, background: C.surface, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                         <i className="ti ti-map-pin" style={{ fontSize: 17, color: picked?.id === r.id ? C.green : C.muted }} />
@@ -1436,7 +1472,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
             )}
 
             {/* Manual-entry escape hatch (spec §2) — closed/missing venues */}
-            <button onClick={() => { setManualName(query.trim()); setManualAddress(''); setManualErr(''); setShowManual(true) }}
+            <button onClick={() => { setManualName(query.trim()); setManualAddress(''); setManualErr(''); setPlaceClosed(false); setShowManual(true) }}
               style={{ width: '100%', padding: 13, border: `1.5px dashed ${C.borderStr}`, borderRadius: 13, background: 'transparent', color: C.text, fontSize: 13, fontWeight: 700, cursor: 'pointer', marginBottom: 10 }}>
               Can't find it? Add it by address
             </button>
@@ -1445,6 +1481,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
               ✨ Not from a place? Add a keepsake
             </button>
 
+            {picked && closedToggle}
             {addErr && (
               <div style={{ fontSize: 12, color: C.red, marginBottom: 10, lineHeight: 1.4 }}>{addErr}</div>
             )}
@@ -1456,13 +1493,17 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
 
         {step === 3 && (
           <div style={{ textAlign: 'center', padding: '20px 0' }}>
-            <div style={{ fontSize: 64, marginBottom: 16 }}>{alreadyHave ? '✓' : '🔥'}</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: C.text, letterSpacing: '-.4px', marginBottom: 8 }}>{alreadyHave ? 'You already have this one.' : picked?.keepsake ? "It's in your collection." : "It's on the map."}</div>
+            <div style={{ fontSize: 64, marginBottom: 16 }}>{reportedClosed ? '📍' : alreadyHave ? '✓' : '🔥'}</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.text, letterSpacing: '-.4px', marginBottom: 8 }}>{reportedClosed ? "Thanks — we've noted it." : alreadyHave ? 'You already have this one.' : picked?.keepsake ? "It's in your collection." : addedVenue?.status === 'closed' ? "A collector's item." : "It's on the map."}</div>
             <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, marginBottom: 24 }}>
-              {alreadyHave
+              {reportedClosed
+                ? <>Your matchbook from <span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is saved. It's still on the map for now — it'll show as closed once a few collectors confirm it's gone.</>
+                : alreadyHave
                 ? <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is already in your collection — no need to add it twice.</>
                 : picked?.keepsake
                 ? <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is saved as a keepsake — yours to rank, never on the map.</>
+                : addedVenue?.status === 'closed'
+                ? <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> may be gone, but its matchbook lives on in your collection — the spot shows as closed on the map.</>
                 : <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is live and in your collection. Everyone nearby can find it.</>}
             </div>
             {needsRanking ? (
@@ -1474,7 +1515,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
             ) : (
               <>
                 <PrimaryBtn onClick={onBack} style={{ marginBottom: 10 }}>Back to map</PrimaryBtn>
-                <OutlineBtn onClick={() => { setStep(1); clearPhotos(); setQuery(''); setResults([]); setPicked(null); setSearchErr(''); setAddErr('') }}>Submit another</OutlineBtn>
+                <OutlineBtn onClick={() => { setStep(1); clearPhotos(); setQuery(''); setResults([]); setPicked(null); setPlaceClosed(false); setReportedClosed(false); setSearchErr(''); setAddErr('') }}>Submit another</OutlineBtn>
               </>
             )}
           </div>
@@ -1484,7 +1525,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
       {/* Manual-entry bottom sheet (spec §2) */}
       {showManual && (
         <div style={{ position: 'absolute', inset: 0, zIndex: 30, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
-          <div onClick={() => !manualAdding && setShowManual(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+          <div onClick={() => !manualAdding && (setShowManual(false), setPlaceClosed(false))} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
           <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px', maxHeight: '88%', overflowY: 'auto', boxShadow: '0 -6px 24px rgba(0,0,0,0.18)' }}>
             <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
             <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 6 }}>Add it manually</div>
@@ -1499,6 +1540,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
               style={{ width: '100%', padding: '13px 14px', border: `1.5px solid ${C.border}`, borderRadius: 13, background: C.card, color: C.text, fontSize: 15, fontWeight: 500, outline: 'none', marginBottom: 6 }} />
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 18, lineHeight: 1.5 }}>Include the town + state so it lands right — e.g. “326 Madaket Rd, Nantucket, MA”.</div>
 
+            {closedToggle}
             {manualErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, lineHeight: 1.4 }}>{manualErr}</div>}
             <PrimaryBtn onClick={handleAddManual} disabled={manualAdding}>{manualAdding ? 'Adding…' : 'Continue'}</PrimaryBtn>
           </div>
