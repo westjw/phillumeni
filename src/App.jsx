@@ -2297,7 +2297,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
 }
 
 // ─── PROFILE SCREEN ──────────────────────────────────────
-function ProfileScreen({ user, displayName, collection, onSignOut, onDeleteAccount, isAdmin, pendingReports = 0, onOpenAdmin, onOpenInvite, following = [], onUnfollow, onOpenFind, onViewCollector, avatarUrl, onAvatarChange, onSheetOpenChange }) {
+function ProfileScreen({ user, displayName, collection, onSignOut, onDeleteAccount, isAdmin, pendingReports = 0, onOpenAdmin, onOpenInvite, following = [], onUnfollow, blocked = [], onUnblock, onOpenFind, onViewCollector, avatarUrl, onAvatarChange, onSheetOpenChange }) {
   const [confirmDelete, setConfirmDelete] = useState(false) // delete-account confirm sheet open
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
   const [deleting, setDeleting] = useState(false)
@@ -2407,6 +2407,23 @@ function ProfileScreen({ user, displayName, collection, onSignOut, onDeleteAccou
               ))
             )}
           </div>
+
+          {/* Blocked — only appears once you've blocked someone. A block you
+              can't undo isn't a feature, it's a trap (and Apple checks). */}
+          {blocked.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.5px', marginBottom: 8 }}>BLOCKED · {blocked.length}</div>
+              {blocked.map(b => (
+                <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `0.5px solid ${C.border}` }}>
+                  {b.avatar_url
+                    ? <img src={b.avatar_url} alt="" style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', flexShrink: 0, filter: 'grayscale(1)', opacity: 0.6 }} />
+                    : <Av ini={(b.display_name || '?').slice(0, 2).toUpperCase()} bg={C.surface} tc={C.muted} size={32} />}
+                  <div style={{ flex: 1, minWidth: 0, fontSize: 13.5, fontWeight: 600, color: C.sec, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{b.display_name}</div>
+                  <button onClick={() => onUnblock?.(b.id)} style={{ flexShrink: 0, fontSize: 11.5, fontWeight: 700, padding: '5px 12px', borderRadius: 99, border: `1px solid ${C.border}`, background: 'transparent', color: C.sec, cursor: 'pointer' }}>Unblock</button>
+                </div>
+              ))}
+            </div>
+          )}
 
           {isAdmin && (
             <button onClick={onOpenAdmin} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', marginBottom: 14, background: C.card, border: `0.5px solid ${C.border}`, borderRadius: 12, cursor: 'pointer', boxShadow: '0 1px 6px rgba(0,0,0,0.06)' }}>
@@ -2666,10 +2683,12 @@ function FindCollectors({ onFollow, onUnfollow, onView, onBack }) {
 // ─── COLLECTOR PROFILE (a collector you follow) ──────────
 // Follow-gated: collector_profile() returns their ranked collection only if you
 // follow them (migration 016). Reached from the Following list + Find collectors.
-function CollectorProfile({ collector, isFollowing, onFollow, onUnfollow, onBack }) {
+function CollectorProfile({ collector, isFollowing, onFollow, onUnfollow, onBlock, onBack }) {
   const [rows, setRows] = useState(null) // null = loading, [] = none/locked
   const [following, setFollowing] = useState(!!isFollowing)
   const [busy, setBusy] = useState(false)
+  const [confirmBlock, setConfirmBlock] = useState(false)
+  const [blockErr, setBlockErr] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -2721,6 +2740,10 @@ function CollectorProfile({ collector, isFollowing, onFollow, onUnfollow, onBack
             style={{ flexShrink: 0, fontSize: 12.5, fontWeight: 700, padding: '8px 16px', borderRadius: 99, cursor: busy ? 'default' : 'pointer', border: following ? `1px solid ${C.border}` : 'none', background: following ? 'transparent' : C.dark, color: following ? C.sec : '#fff', opacity: busy ? 0.6 : 1 }}>
             {following ? 'Following' : 'Follow'}
           </button>
+          {onBlock && (
+            <button onClick={() => { setBlockErr(''); setConfirmBlock(true) }}
+              style={{ flexShrink: 0, background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: '4px 2px', fontSize: 18, letterSpacing: '.5px' }}>···</button>
+          )}
         </div>
 
         {rows === null ? (
@@ -2752,6 +2775,32 @@ function CollectorProfile({ collector, isFollowing, onFollow, onUnfollow, onBack
           </div>
         )}
       </div>
+
+      {/* Block — App Store 1.2 requires this, and the trade chat will rest on it */}
+      {confirmBlock && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 40, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={() => !busy && setConfirmBlock(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+          <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px', boxShadow: '0 -6px 24px rgba(0,0,0,0.18)' }}>
+            <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
+            <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 6 }}>Block {collector.display_name}?</div>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 18 }}>
+              You'll disappear from each other — no collections, no search, no following, either direction. They aren't told. You can undo this from your Profile.
+            </div>
+            {blockErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, lineHeight: 1.4 }}>{blockErr}</div>}
+            <button onClick={async () => {
+              setBusy(true); setBlockErr('')
+              const ok = await onBlock?.(collector.id)
+              setBusy(false)
+              if (ok === false) { setBlockErr('Couldn’t block them — try again.'); return }
+              setConfirmBlock(false); onBack?.()
+            }} disabled={busy}
+              style={{ width: '100%', padding: 14, background: C.red, color: '#fff', border: 'none', borderRadius: 13, fontSize: 15, fontWeight: 700, cursor: busy ? 'default' : 'pointer', marginBottom: 8, opacity: busy ? 0.6 : 1 }}>
+              {busy ? 'Blocking…' : `Block ${collector.display_name}`}
+            </button>
+            <button onClick={() => setConfirmBlock(false)} disabled={busy} style={{ width: '100%', padding: 13, background: 'none', border: 'none', color: C.muted, fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -3222,6 +3271,7 @@ export default function App() {
   const [viewingCollector, setViewingCollector] = useState(null) // { id, display_name, avatar_url, isFollowing }
   const [reRankTarget, setReRankTarget] = useState(null) // { venue, photo, score } — re-ranking a spot via head-to-heads
   const [following, setFollowing] = useState([]) // [{ id, display_name, avatar_url, matchbooks }]
+  const [blocked, setBlocked] = useState([])     // [{ id, display_name, avatar_url }] — 022
   const [sheetOpen, setSheetOpen] = useState(false) // a bottom sheet is open → hide TabBar
 
   // Auth state
@@ -3412,6 +3462,34 @@ export default function App() {
     setFollowing(prev => prev.filter(f => f.id !== userId))
     return true
   }
+
+  // Block (022). Goes through the RPC because a client can only delete its OWN
+  // follow row — severing THEIR follow of you needs definer rights, and a block
+  // that leaves them following you isn't a block.
+  const handleBlock = async (userId) => {
+    if (!user) return false
+    const { error } = await supabase.rpc('block_user', { target: userId })
+    if (error) { console.error('Block failed', error); return false }
+    setFollowing(prev => prev.filter(f => f.id !== userId))
+    loadBlocked()
+    return true
+  }
+  const handleUnblock = async (userId) => {
+    if (!user) return false
+    const { error } = await supabase.from('blocks').delete().eq('blocker_id', user.id).eq('blocked_id', userId)
+    if (error) { console.error('Unblock failed', error); return false }
+    setBlocked(prev => prev.filter(b => b.id !== userId))
+    return true
+  }
+
+  // Your own block list, with names — profiles are owner-only, so this needs the RPC.
+  const loadBlocked = useCallback(() => {
+    if (!user) { setBlocked([]); return }
+    supabase.rpc('blocked_list').then(({ data, error }) => {
+      setBlocked(error ? [] : (data || [])) // pre-022: no RPC, stay empty
+    })
+  }, [user])
+  useEffect(() => { loadBlocked() }, [loadBlocked])
 
   // Load collection with venue data joined
   const refreshCollection = useCallback(async () => {
@@ -3745,6 +3823,7 @@ export default function App() {
           isFollowing={viewingCollector.isFollowing ?? following.some(f => f.id === viewingCollector.id)}
           onFollow={handleFollow}
           onUnfollow={handleUnfollow}
+          onBlock={handleBlock}
           onBack={() => setViewingCollector(null)}
         />
       ) : (
@@ -3797,6 +3876,8 @@ export default function App() {
               onOpenInvite={() => setShowInvite(true)}
               following={following}
               onUnfollow={handleUnfollow}
+              blocked={blocked}
+              onUnblock={handleUnblock}
               onOpenFind={() => setShowFind(true)}
               onViewCollector={setViewingCollector}
               avatarUrl={myAvatar}
