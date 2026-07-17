@@ -75,6 +75,13 @@ const C = {
 // created before migration 020 added the kind column.
 const isKeepsake = (v) => v?.kind === 'keepsake' || (Number(v?.lat) === 0 && Number(v?.lng) === 0)
 
+// A spot you can't get a matchbook from anymore. Two ways to die, and they must
+// READ differently: 'closed' is the business; 'discontinued' is a business
+// that's still open but stopped making them — calling that "Closed" would send
+// people past a busy bar the app swears is gone. Same behaviour, honest label.
+const isRetired = (v) => v?.status === 'closed' || v?.status === 'discontinued'
+const retiredLabel = (v) => (v?.status === 'discontinued' ? 'No longer makes matchbooks' : 'Closed')
+
 // ─── SMALL COMPONENTS ────────────────────────────────────
 const Av = ({ ini, bg, tc, size = 34 }) => (
   <div style={{ width: size, height: size, borderRadius: '50%', background: bg, color: tc, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * .34, fontWeight: 600, flexShrink: 0 }}>{ini}</div>
@@ -349,7 +356,7 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
       // Hide venues the user reported — but never one they've COLLECTED (e.g.
       // submitted with "this place has closed"): their own pin must not vanish.
       if (reportedIds.includes(v.id) && !collectedSet.has(v.id)) return false
-      if (filter === 'open') return v.is_open && v.status !== 'closed'
+      if (filter === 'open') return v.is_open && !isRetired(v)
       if (filter === 'multi') return (v.sources || []).length >= 2
       return true
     })
@@ -362,7 +369,7 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
         geometry: { type: 'Point', coordinates: [Number(v.lng), Number(v.lat)] },
         properties: {
           vid: v.id,
-          closed: v.status === 'closed' ? 1 : 0,
+          closed: isRetired(v) ? 1 : 0, // grey pin: no matchbooks to get, either way
           collected: collectedSet.has(v.id) ? 1 : 0, // found ones turn amber
         },
       })),
@@ -459,7 +466,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
     .filter(v => {
       if (isKeepsake(v)) return false // no place — never "nearby"
       if (reportedIds.includes(v.id) && !collectionIds.includes(v.id)) return false
-      if (v.status === 'closed') return false // closed venues aren't collectable
+      if (isRetired(v)) return false // nothing to collect here anymore
       if (filter === 'open') return v.is_open
       if (filter === 'multi') return (v.sources || []).length >= 2
       return true
@@ -513,7 +520,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
               </div>
             </div>
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 12 }}>
-              {selected.status === 'closed' && <Tag label="Closed" bg={C.redBg} color={C.red} />}
+              {isRetired(selected) && <Tag label={retiredLabel(selected)} bg={C.redBg} color={C.red} />}
               {collectionIds.includes(selected.id) && <Tag label="✓ In your collection" bg={C.amberBg} color={C.amber} />}
               <Tag label={selected.type || 'Spot'} bg={C.surface} color={C.sec} />
             </div>
@@ -533,9 +540,11 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
               </div>
             )}
             {selected.note && <div style={{ fontSize: 12, color: C.muted, fontStyle: 'italic', marginBottom: 14, lineHeight: 1.5 }}>{selected.note}</div>}
-            {selected.status === 'closed' ? (
+            {isRetired(selected) ? (
               <div style={{ padding: 12, background: C.surface, borderRadius: 12, fontSize: 13, color: C.sec, textAlign: 'center', fontWeight: 500, lineHeight: 1.5 }}>
-                This spot has closed — its matchbooks are now collector's items.
+                {selected.status === 'discontinued'
+                  ? "This spot is still open, but doesn't make matchbooks anymore — the ones out there are collector's items."
+                  : "This spot has closed — its matchbooks are now collector's items."}
               </div>
             ) : collectionIds.includes(selected.id) ? (
               postCollect ? (
@@ -622,7 +631,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
         <ReportSheet
           venue={reporting}
           onClose={() => setReporting(null)}
-          onNotAvailable={async (venueId) => { const ok = await onFlag(venueId); if (ok) setSelected(null); return ok }}
+          onNotAvailable={async (venueId, reason) => { const ok = await onFlag(venueId, reason); if (ok) setSelected(null); return ok }}
           onFake={onFakeReport}
         />
       )}
@@ -630,19 +639,51 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
   )
 }
 
-// Full-page matchbook detail (photos, tags, rank / remove) — shared by
-// Collection tiles and Rankings "Mine" rows, so both paths land on the
-// same page. `item` is a collection row with `venue` attached.
-function MatchbookDetail({ item, title, backLabel, onBack, onReRank, onRemove, onAddPhotos }) {
-  const v = item.venue
+// How long ago, in the coarsest unit that's still true. "Last collected" is the
+// live signal that a spot still has matchbooks, so precision past a day is noise.
+function agoLabel(ts) {
+  if (!ts) return null
+  const days = Math.floor((Date.now() - new Date(ts).getTime()) / 86400000)
+  if (days <= 0) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 30) return `${days} days ago`
+  const months = Math.round(days / 30)
+  if (days < 365) return months === 1 ? 'a month ago' : `${months} months ago`
+  const years = Math.round(days / 365)
+  return years === 1 ? 'a year ago' : `${years} years ago`
+}
+
+// One card for a venue, whether or not you own its matchbook. Opens from
+// Collection tiles, every Rankings row (Mine + City/World/Friends), so a spot
+// looks the same everywhere. `item` is your collection row (with `venue`
+// attached) when you have it; for a spot you don't own, pass `venue` alone and
+// the card drops to read-only — no photos, no rank, no remove.
+function MatchbookDetail({ item, venue, title, backLabel, onBack, onReRank, onRemove, onAddPhotos }) {
+  const v = item?.venue || venue
+  const owned = !!item
   // Local copy so the page updates in place as photos upload; the collection
   // state itself is updated by onAddPhotos up in App.
   const [detailPhotos, setDetailPhotos] = useState(
-    (item.photos && item.photos.length) ? item.photos : (item.photo_url ? [item.photo_url] : [])
+    (item?.photos && item.photos.length) ? item.photos : (item?.photo_url ? [item.photo_url] : [])
   )
   const [photoBusy, setPhotoBusy] = useState(false)
   const [photoErr, setPhotoErr] = useState('')
   const fileRef = useRef(null)
+
+  // Community freshness: when did ANYONE last log a matchbook here? collections
+  // is owner-only under RLS, so this has to come from a definer RPC (021).
+  // Meaningless for a retired spot (the closed-toggle submit path writes
+  // collected_at = today, which would read as "still stocked"), so we don't ask.
+  const [lastCollected, setLastCollected] = useState(null)
+  const showFreshness = !isKeepsake(v) && !isRetired(v)
+  useEffect(() => {
+    if (!showFreshness || !v?.id) { setLastCollected(null); return }
+    let cancelled = false
+    supabase.rpc('venue_last_collected', { p_venue_id: v.id }).then(({ data, error }) => {
+      if (!cancelled) setLastCollected(error ? null : data) // pre-021: no RPC, just omit the line
+    })
+    return () => { cancelled = true }
+  }, [v?.id, showFreshness])
 
   const addPhotos = async (e) => {
     const files = [...(e.target.files || [])]
@@ -678,17 +719,35 @@ function MatchbookDetail({ item, title, backLabel, onBack, onReRank, onRemove, o
           <div style={{ fontSize: 19, fontWeight: 700, color: C.text, letterSpacing: '-.3px', marginBottom: 4 }}>{v.name}</div>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>{v.address}</div>
           <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 14 }}>
-            <Tag label={`Collected ${new Date(item.collected_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`} bg={C.greenBg} color={C.green} />
+            {owned && <Tag label={`Collected ${new Date(item.collected_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`} bg={C.greenBg} color={C.green} />}
             <Tag label={v.type || 'Spot'} bg={C.surface} color={C.sec} />
-            {v.status === 'closed' && <Tag label="Closed — collector's item" bg={C.redBg} color={C.red} />}
+            {isRetired(v) && <Tag label={`${retiredLabel(v)} — collector's item`} bg={C.redBg} color={C.red} />}
           </div>
-          {onAddPhotos && <input ref={fileRef} type="file" accept="image/*" multiple onChange={addPhotos} style={{ display: 'none' }} />}
+          {/* Does this spot still have them? The last time anyone logged one is
+              the only honest answer we have. */}
+          {showFreshness && lastCollected && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, background: C.surface, borderRadius: 12, padding: '10px 12px', marginBottom: 14 }}>
+              <i className="ti ti-flame" style={{ fontSize: 14, color: C.amber }} />
+              <span style={{ fontSize: 12.5, color: C.sec }}>
+                Last collected <span style={{ fontWeight: 700, color: C.text }}>{agoLabel(lastCollected)}</span>
+              </span>
+            </div>
+          )}
+          {isRetired(v) && v.closed_at && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, background: C.surface, borderRadius: 12, padding: '10px 12px', marginBottom: 14 }}>
+              <i className="ti ti-archive" style={{ fontSize: 14, color: C.muted }} />
+              <span style={{ fontSize: 12.5, color: C.sec }}>
+                {v.status === 'discontinued' ? 'Stopped making them' : 'Closed'} <span style={{ fontWeight: 700, color: C.text }}>{agoLabel(v.closed_at)}</span>
+              </span>
+            </div>
+          )}
+          {owned && onAddPhotos && <input ref={fileRef} type="file" accept="image/*" multiple onChange={addPhotos} style={{ display: 'none' }} />}
           {detailPhotos.length > 0 && (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
               {detailPhotos.map((url, i) => (
                 <img key={i} src={url} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, border: i === 0 ? `2px solid ${C.amber}` : `0.5px solid ${C.border}` }} />
               ))}
-              {onAddPhotos && (
+              {owned && onAddPhotos && (
                 <button onClick={() => !photoBusy && fileRef.current?.click()}
                   style={{ width: 64, height: 64, borderRadius: 8, border: `1.5px dashed ${C.borderStr}`, background: 'none', color: C.muted, fontSize: 22, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   {photoBusy ? '…' : '+'}
@@ -696,7 +755,7 @@ function MatchbookDetail({ item, title, backLabel, onBack, onReRank, onRemove, o
               )}
             </div>
           )}
-          {detailPhotos.length === 0 && (
+          {owned && detailPhotos.length === 0 && (
             onAddPhotos ? (
               <button onClick={() => !photoBusy && fileRef.current?.click()}
                 style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: C.surface, border: `1.5px dashed ${C.borderStr}`, borderRadius: 12, padding: '12px', fontSize: 13, fontWeight: 600, color: C.sec, cursor: 'pointer', marginBottom: 14 }}>
@@ -710,7 +769,16 @@ function MatchbookDetail({ item, title, backLabel, onBack, onReRank, onRemove, o
             )
           )}
           {photoErr && <div style={{ fontSize: 12, color: C.red, margin: '-6px 0 12px', lineHeight: 1.4 }}>{photoErr}</div>}
-          {onReRank && (
+          {/* A spot you don't own: read-only. Nothing here is yours to rank. */}
+          {!owned && (
+            <div style={{ background: C.surface, borderRadius: 12, padding: '11px 13px', fontSize: 12.5, color: C.muted, lineHeight: 1.5 }}>
+              <i className="ti ti-map-pin" style={{ fontSize: 12, marginRight: 6 }} />
+              {isRetired(v)
+                ? "Not in your collection — and this spot is retired, so the only way to get one now is a trade."
+                : "Not in your collection yet. Find it on the map to collect it."}
+            </div>
+          )}
+          {owned && onReRank && (
             <button
               onClick={() => onReRank({ ...item, photos: detailPhotos, photo_url: detailPhotos[0] || item.photo_url })}
               style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: C.amber, color: '#fff', border: 'none', borderRadius: 12, padding: '13px', fontSize: 14, fontWeight: 700, cursor: 'pointer', marginBottom: 10 }}
@@ -719,7 +787,7 @@ function MatchbookDetail({ item, title, backLabel, onBack, onReRank, onRemove, o
               {item.score == null ? 'Rank this spot' : 'Re-rank this spot'}
             </button>
           )}
-          {onRemove && <OutlineBtn onClick={() => onRemove(item.id)} color={C.red}>Remove from collection</OutlineBtn>}
+          {owned && onRemove && <OutlineBtn onClick={() => onRemove(item.id)} color={C.red}>Remove from collection</OutlineBtn>}
         </div>
       </div>
     </div>
@@ -813,8 +881,10 @@ function Collection({ items, venues, onRemove, onSubmit, onReRank, onAddPhotos }
                 {item.photo_url
                   ? <img src={item.photo_url} alt="" loading="lazy" decoding="async" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', background: '#000' }} />
                   : item.venue.emoji}
-                {item.venue.status === 'closed' && (
-                  <div style={{ position: 'absolute', top: 4, left: 4, background: 'rgba(0,0,0,0.72)', color: '#fff', fontSize: 8, fontWeight: 700, letterSpacing: .3, padding: '1px 5px', borderRadius: 99 }}>CLOSED</div>
+                {isRetired(item.venue) && (
+                  <div style={{ position: 'absolute', top: 4, left: 4, background: 'rgba(0,0,0,0.72)', color: '#fff', fontSize: 8, fontWeight: 700, letterSpacing: .3, padding: '1px 5px', borderRadius: 99 }}>
+                    {item.venue.status === 'discontinued' ? 'NO MATCHES' : 'CLOSED'}
+                  </div>
                 )}
                 <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'linear-gradient(transparent,rgba(0,0,0,0.6))', padding: '14px 5px 5px' }}>
                   <div style={{ fontSize: 9, color: '#fff', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
@@ -835,7 +905,7 @@ function Collection({ items, venues, onRemove, onSubmit, onReRank, onAddPhotos }
                   <div style={{ fontSize: 14, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
                   <div style={{ fontSize: 11, color: C.muted }}>
                     {item.venue.neighborhood ? `${item.venue.neighborhood} · ${item.venue.city}` : item.venue.city}
-                    {item.venue.status === 'closed' && <span style={{ color: C.red, fontWeight: 700 }}> · Closed</span>}
+                    {isRetired(item.venue) && <span style={{ color: C.red, fontWeight: 700 }}> · {retiredLabel(item.venue)}</span>}
                   </div>
                 </div>
                 <div style={{ fontSize: 11, color: C.muted, flexShrink: 0 }}>{new Date(item.collected_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
@@ -850,7 +920,7 @@ function Collection({ items, venues, onRemove, onSubmit, onReRank, onAddPhotos }
 }
 
 // ─── SUBMIT SCREEN ───────────────────────────────────────
-function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = new Set(), onRankingDone, onSheetOpenChange }) {
+function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = new Set(), onRankingDone, onSheetOpenChange, onFlag }) {
   const [step, setStep] = useState(1)
   const [photos, setPhotos] = useState([]) // { id, preview, url, path, status: 'uploading'|'done'|'error' }
   const photosRef = useRef(photos)
@@ -862,6 +932,10 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
   const [picked, setPicked] = useState(null)
   const [placeClosed, setPlaceClosed] = useState(false) // "this place has closed" — collector's item
   const [reportedClosed, setReportedClosed] = useState(false) // added-closed against a still-active venue (report pending)
+  const [retiredPrompt, setRetiredPrompt] = useState(null) // { venue } — retired spot: when did you get it?
+  const [reposted, setReposted] = useState(false)          // a recent matchbook put it back on the map
+  const [retiredAdding, setRetiredAdding] = useState(false)
+  const [retiredErr, setRetiredErr] = useState('')
   const [adding, setAdding] = useState(false)
   const [searchErr, setSearchErr] = useState('')
   const [addErr, setAddErr] = useState('')
@@ -1057,6 +1131,9 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
 
       await collectVenue(venue, placeClosed)
     } catch (e) {
+      // A retired spot isn't a dead end — ask when they got the matchbook, and
+      // a recent one puts the spot back on the map (handleRetiredAnswer).
+      if (e.code === 'RETIRED') { setRetiredPrompt({ venue: e.venue }); setAdding(false); return }
       console.error(e)
       setAddErr(e.message || 'Something went wrong. Try again.')
     }
@@ -1066,11 +1143,15 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
   // Collect a resolved venue into the user's collection, then trigger ranking.
   // Shared by the search path (handleAdd) and manual entry (handleAddManual).
   // closedByUser = the "This place has closed" toggle: it unlocks collecting an
-  // already-closed venue (the matchbook is a collector's item — you HAVE it,
+  // already-retired venue (the matchbook is a collector's item — you HAVE it,
   // you're not going there) and files a closed-report on a still-active one.
-  const collectVenue = async (venue, closedByUser = false) => {
-    if (venue?.status === 'closed' && !closedByUser) {
-      throw new Error('That spot is marked closed. Turn on “This place has closed” to add its matchbook as a collector’s item.')
+  // retiredOk = the caller already asked WHEN they got it (the repost prompt).
+  // Otherwise a retired venue raises a RETIRED signal rather than a dead-end
+  // error, so Submit can ask instead of just refusing. Kept here (not in the
+  // callers) because a create-race can still resolve to a retired row.
+  const collectVenue = async (venue, closedByUser = false, retiredOk = false) => {
+    if (isRetired(venue) && !closedByUser && !retiredOk) {
+      throw Object.assign(new Error('RETIRED'), { code: 'RETIRED', venue })
     }
 
     // Add to collection — capture the real row (serial id) and surface errors.
@@ -1140,21 +1221,19 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
       }
     }
 
-    // The user says a still-active spot has closed → file a "not available"
-    // report so it counts toward the community auto-close (3 distinct reports).
-    // Best-effort: their matchbook is already saved either way. The spot won't
-    // flip to closed until 3 collectors report it, so step 3 says "pending",
-    // NOT "collector's item" (that's only for an already/newly-closed row).
-    const reportPending = closedByUser && venue.status !== 'closed'
-    if (reportPending) {
-      supabase.from('reports')
-        .upsert({ user_id: user.id, venue_id: venue.id }, { onConflict: 'user_id,venue_id', ignoreDuplicates: true })
-        .then(({ error }) => { if (error) console.error('Closed report failed', error) })
-    }
+    // The user says a still-active spot has closed → file a closed_down report,
+    // which counts toward the community auto-close (2 distinct reporters).
+    // Routed through onFlag, NOT a hand-rolled insert: a bare reason-less row is
+    // INERT under 021 (the trigger filters on reason), so this promise — and the
+    // step-3 copy that repeats it — would have counted toward precisely nothing.
+    // Best-effort: their matchbook is already saved either way.
+    const reportPending = closedByUser && !isRetired(venue)
+    if (reportPending) onFlag?.(venue.id, 'closed_down')
 
     setAddedVenue(venue)
     setAlreadyHave(alreadyHave)
     setReportedClosed(reportPending)
+    setReposted(false) // handleRetiredAnswer flips this back on if the repost lands
     // Offer ranking when the venue isn't the user's first ranked one and its
     // collection row currently has no score (newly added, or never ranked).
     setNeedsRanking(!isFirstRanked && !!savedRow && savedRow.score == null)
@@ -1245,6 +1324,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
       }
       setShowManual(false)
     } catch (e) {
+      if (e.code === 'RETIRED') { setShowManual(false); setRetiredPrompt({ venue: e.venue }); setManualAdding(false); return }
       console.error(e)
       // A failed manual add must not leave `picked` set to a mapbox_id-less
       // object — that would arm a dead-end "Add" button back on step 2.
@@ -1306,6 +1386,40 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
       setKeepsakeErr(e.message || 'Couldn’t add it. Try again.')
     }
     setKeepsakeAdding(false)
+  }
+
+  // The spot is retired but you have its matchbook — so when did you get it?
+  // A recent one is live proof the place has them again, and reposts it. An old
+  // one proves nothing about today, so it stays retired and stays a keepsake of
+  // a dead spot. 'year' is the ambiguous middle: collect, don't repost, let the
+  // reports stand for review.
+  const handleRetiredAnswer = async (recency) => {
+    const venue = retiredPrompt?.venue
+    if (!venue) return
+    setRetiredAdding(true)
+    setRetiredErr('')
+    try {
+      // Collect FIRST: repost_venue only accepts a caller who has the matchbook.
+      await collectVenue(venue, false, true)
+      if (recency === 'month') {
+        const { error } = await supabase.rpc('repost_venue', { p_venue_id: venue.id })
+        if (error) {
+          // The matchbook is already saved — a failed repost is not worth losing
+          // it over. It just stays retired until someone else confirms.
+          console.error('Repost failed', error)
+        } else {
+          const back = { ...venue, status: 'active', closed_at: null }
+          setAddedVenue(back)
+          setReposted(true)
+          onAdded(back, null) // push the un-retired venue back into the map
+        }
+      }
+      setRetiredPrompt(null)
+    } catch (e) {
+      console.error(e)
+      setRetiredErr(e.message || 'Couldn’t add it. Try again.')
+    }
+    setRetiredAdding(false)
   }
 
   // "Skip for now" from the step-3 confirmation: the spot stays UNRANKED
@@ -1493,17 +1607,19 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
 
         {step === 3 && (
           <div style={{ textAlign: 'center', padding: '20px 0' }}>
-            <div style={{ fontSize: 64, marginBottom: 16 }}>{reportedClosed ? '📍' : alreadyHave ? '✓' : '🔥'}</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: C.text, letterSpacing: '-.4px', marginBottom: 8 }}>{reportedClosed ? "Thanks — we've noted it." : alreadyHave ? 'You already have this one.' : picked?.keepsake ? "It's in your collection." : addedVenue?.status === 'closed' ? "A collector's item." : "It's on the map."}</div>
+            <div style={{ fontSize: 64, marginBottom: 16 }}>{reposted ? '🔥' : reportedClosed ? '📍' : alreadyHave ? '✓' : '🔥'}</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.text, letterSpacing: '-.4px', marginBottom: 8 }}>{reposted ? "It's back on the map." : reportedClosed ? "Thanks — we've noted it." : alreadyHave ? 'You already have this one.' : picked?.keepsake ? "It's in your collection." : isRetired(addedVenue) ? "A collector's item." : "It's on the map."}</div>
             <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, marginBottom: 24 }}>
-              {reportedClosed
+              {reposted
+                ? <>You got one recently, so <span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is live again for everyone. Nice find.</>
+                : reportedClosed
                 ? <>Your matchbook from <span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is saved. It's still on the map for now — it'll show as closed once a few collectors confirm it's gone.</>
                 : alreadyHave
                 ? <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is already in your collection — no need to add it twice.</>
                 : picked?.keepsake
                 ? <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is saved as a keepsake — yours to rank, never on the map.</>
-                : addedVenue?.status === 'closed'
-                ? <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> may be gone, but its matchbook lives on in your collection — the spot shows as closed on the map.</>
+                : isRetired(addedVenue)
+                ? <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> {addedVenue?.status === 'discontinued' ? "doesn't make them anymore" : 'may be gone'}, but its matchbook lives on in your collection.</>
                 : <><span style={{ fontWeight: 700, color: C.text }}>{picked?.name}</span> is live and in your collection. Everyone nearby can find it.</>}
             </div>
             {needsRanking ? (
@@ -1515,7 +1631,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
             ) : (
               <>
                 <PrimaryBtn onClick={onBack} style={{ marginBottom: 10 }}>Back to map</PrimaryBtn>
-                <OutlineBtn onClick={() => { setStep(1); clearPhotos(); setQuery(''); setResults([]); setPicked(null); setPlaceClosed(false); setReportedClosed(false); setSearchErr(''); setAddErr('') }}>Submit another</OutlineBtn>
+                <OutlineBtn onClick={() => { setStep(1); clearPhotos(); setQuery(''); setResults([]); setPicked(null); setPlaceClosed(false); setReportedClosed(false); setReposted(false); setRetiredPrompt(null); setSearchErr(''); setAddErr('') }}>Submit another</OutlineBtn>
               </>
             )}
           </div>
@@ -1547,6 +1663,43 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
         </div>
       )}
 
+      {/* Retired spot: you have the matchbook, so when did you get it? A recent
+          one reposts the spot; an old one is just a collector's item. */}
+      {retiredPrompt && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 30, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={() => { if (!retiredAdding) { setRetiredPrompt(null); if (picked?.manual) setPicked(null) } }} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+          <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px', maxHeight: '88%', overflowY: 'auto', boxShadow: '0 -6px 24px rgba(0,0,0,0.18)' }}>
+            <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
+            <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 6 }}>When did you get this one?</div>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 18 }}>
+              <span style={{ fontWeight: 700, color: C.text }}>{retiredPrompt.venue?.name}</span> is marked{' '}
+              {retiredPrompt.venue?.status === 'discontinued' ? 'as no longer making matchbooks' : 'closed'}. If you picked this up recently, that's proof it's back — and it goes straight back on the map.
+            </div>
+            {[
+              { key: 'month', title: 'In the last month', sub: 'Puts the spot back on the map for everyone', accent: true },
+              { key: 'year', title: 'In the last year', sub: 'Saved to your collection — too old to prove it\'s back' },
+              { key: 'older', title: 'Longer ago than that', sub: 'A collector\'s item — the spot stays retired' },
+            ].map(o => (
+              <button key={o.key} onClick={() => handleRetiredAnswer(o.key)} disabled={retiredAdding}
+                style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 14, padding: '14px', border: `1.5px solid ${o.accent ? C.amberBd : C.border}`, borderRadius: 14, background: o.accent ? C.amberBg : C.card, cursor: retiredAdding ? 'default' : 'pointer', marginBottom: 10, textAlign: 'left', opacity: retiredAdding ? 0.6 : 1 }}>
+                <div style={{ width: 44, height: 44, borderRadius: 12, background: o.accent ? C.card : C.surface, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <i className={`ti ${o.accent ? 'ti-flame' : 'ti-clock'}`} style={{ fontSize: 20, color: o.accent ? C.amber : C.sec }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: o.accent ? C.amber : C.text }}>{o.title}</div>
+                  <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.4 }}>{o.sub}</div>
+                </div>
+              </button>
+            ))}
+            {retiredErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 10, lineHeight: 1.4 }}>{retiredErr}</div>}
+            {/* Cancelling from the MANUAL path would strand a mapbox_id-less
+                `picked` on step 2 and arm a dead-end Add button — same guard the
+                manual catch applies, which the RETIRED early-return jumps over. */}
+            <button onClick={() => { setRetiredPrompt(null); if (picked?.manual) setPicked(null) }} disabled={retiredAdding} style={{ width: '100%', padding: 13, marginTop: 4, background: 'none', border: 'none', color: C.muted, fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
       {/* Keepsake bottom sheet — matchbooks that aren't from a place */}
       {showKeepsake && (
         <div style={{ position: 'absolute', inset: 0, zIndex: 30, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
@@ -1574,8 +1727,19 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
 // ─── REPORT SHEET (spec §4/§5) ───────────────────────────
 // Bottom sheet: "Not available here" (reports) + "This isn't a real matchbook"
 // (fake_reports). Reusable from the Explore detail and the Rankings row menu.
+// Why a spot is unavailable. The reason DECIDES the outcome (migration 021):
+// only "the place shut down" can close a venue, only "stopped making them" can
+// retire its matchbooks. The other two are advisory and reverse themselves the
+// moment someone collects there again.
+const REPORT_REASONS = [
+  { key: 'out_temporarily', icon: 'ti-clock-pause', title: 'They’re out right now', sub: 'Staff said they plan to restock' },
+  { key: 'discontinued', icon: 'ti-flame-off', title: 'They don’t make them anymore', sub: 'The place is still open — the matchbooks are done' },
+  { key: 'closed_down', icon: 'ti-building-store', title: 'The place has closed down', sub: 'Out of business for good' },
+  { key: 'unknown', icon: 'ti-help-circle', title: 'Not sure', sub: 'Just weren’t any — no reason given' },
+]
+
 function ReportSheet({ venue, onClose, onNotAvailable, onFake }) {
-  const [mode, setMode] = useState('menu') // menu | fake
+  const [mode, setMode] = useState('menu') // menu | why | fake
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -1583,10 +1747,10 @@ function ReportSheet({ venue, onClose, onNotAvailable, onFake }) {
 
   // Handlers return false on a failed write — keep the sheet open + show the
   // error instead of closing as if the report landed.
-  const runNotAvailable = async () => {
+  const runNotAvailable = async (reasonKey) => {
     setBusy(true)
     setErr('')
-    const ok = await onNotAvailable(venue.id)
+    const ok = await onNotAvailable(venue.id, reasonKey)
     setBusy(false)
     if (ok === false) { setErr('Couldn’t send that — check your connection and try again.'); return }
     onClose()
@@ -1608,15 +1772,15 @@ function ReportSheet({ venue, onClose, onNotAvailable, onFake }) {
       <div onClick={() => !busy && onClose()} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
       <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px', boxShadow: '0 -6px 24px rgba(0,0,0,0.18)' }}>
         <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
-        <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 16 }}>Report a problem</div>
+        <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 16 }}>{mode === 'why' ? 'What happened?' : 'Report a problem'}</div>
 
         {mode === 'menu' ? (
           <>
-            <button onClick={runNotAvailable} disabled={busy} style={option}>
+            <button onClick={() => { setErr(''); setMode('why') }} disabled={busy} style={option}>
               <div style={iconWrap}><i className="ti ti-map-pin-off" style={{ fontSize: 20, color: C.sec }} /></div>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Not available here</div>
-                <div style={{ fontSize: 12, color: C.muted }}>This spot ran out or stopped having them</div>
+                <div style={{ fontSize: 12, color: C.muted }}>Couldn't get a matchbook at this spot</div>
               </div>
             </button>
             <button onClick={() => setMode('fake')} disabled={busy} style={option}>
@@ -1628,6 +1792,23 @@ function ReportSheet({ venue, onClose, onNotAvailable, onFake }) {
             </button>
             {err && <div style={{ fontSize: 12, color: C.red, margin: '2px 0 10px', lineHeight: 1.4 }}>{err}</div>}
             <button onClick={onClose} disabled={busy} style={{ width: '100%', padding: 13, marginTop: 4, background: 'none', border: 'none', color: C.muted, fontSize: 15, fontWeight: 600, cursor: busy ? 'default' : 'pointer' }}>Cancel</button>
+          </>
+        ) : mode === 'why' ? (
+          <>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>
+              Only "closed down" and "don't make them anymore" retire a spot — and it takes two collectors to agree.
+            </div>
+            {REPORT_REASONS.map(r => (
+              <button key={r.key} onClick={() => runNotAvailable(r.key)} disabled={busy} style={option}>
+                <div style={iconWrap}><i className={`ti ${r.icon}`} style={{ fontSize: 20, color: r.key === 'closed_down' ? C.red : C.sec }} /></div>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{r.title}</div>
+                  <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.4 }}>{r.sub}</div>
+                </div>
+              </button>
+            ))}
+            {err && <div style={{ fontSize: 12, color: C.red, margin: '2px 0 10px', lineHeight: 1.4 }}>{err}</div>}
+            <button onClick={() => setMode('menu')} disabled={busy} style={{ width: '100%', padding: 12, marginTop: 4, background: 'none', border: 'none', color: C.muted, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Back</button>
           </>
         ) : (
           <>
@@ -1839,7 +2020,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
   const [tab, setTab] = useState('mine')
   const [reporting, setReporting] = useState(null) // venue being reported
   const [actions, setActions] = useState(null)     // ranked item whose ··· menu is open
-  const [detail, setDetail] = useState(null)       // Mine row opened as a matchbook page
+  const [detail, setDetail] = useState(null)       // { item, venue } — any row opened as a card
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
 
   useEffect(() => {
@@ -1932,7 +2113,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
   const aggList = (rows, subtitle) => (
     <div style={{ padding: '4px 16px' }}>
       {rows.map(item => (
-        <div key={item.venue_id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}` }}>
+        <div key={item.venue_id} onClick={() => openRow(item.venue)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
           <div style={rankCircle(item.rank)}>{item.rank}</div>
           <div style={{ width: 42, height: 42, borderRadius: 11, background: item.venue.bg_color || C.dark, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0, letterSpacing: '-.2px' }}>
             {venueInitials(item.venue.name)}
@@ -1949,12 +2130,19 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
   )
   const collectorsLabel = (n) => `${n} ${n === 1 ? 'collector' : 'collectors'}`
 
-  // Tapping a Mine row opens the same matchbook page Collection uses — with
-  // the rank/re-rank button — instead of burying re-rank behind the ··· menu.
+  // EVERY row opens the same card — Mine, and the City/World/Friends boards,
+  // which used to be dead taps. If the spot is in your collection the card is
+  // the full matchbook page (photos, rank); if not, it's read-only.
+  const openRow = (venue) => {
+    const mine = collection.find(c => c.venue_id === venue.id)
+    setDetail({ item: mine ? { ...mine, venue } : null, venue })
+  }
+
   if (detail) {
     return (
       <MatchbookDetail
-        item={detail}
+        item={detail.item}
+        venue={detail.venue}
         backLabel="Rankings"
         onBack={() => setDetail(null)}
         onReRank={onReRank ? (it) => { setDetail(null); onReRank(it) } : null}
@@ -1990,7 +2178,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
           ) : (
             <div style={{ padding: '4px 16px' }}>
               {ranked.map(item => (
-                <div key={item.id} onClick={() => setDetail(item)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
+                <div key={item.id} onClick={() => openRow(item.venue)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
                   <div style={rankCircle(item.rank)}>{item.rank}</div>
                   <div style={{ width: 42, height: 42, borderRadius: 11, background: item.venue.bg_color || C.dark, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0, letterSpacing: '-.2px' }}>
                     {venueInitials(item.venue.name)}
@@ -2012,7 +2200,7 @@ function Rankings({ collection, venues, onFlag, onFakeReport, onReRank, onUnrank
                     Collected but not placed yet — rank them to add them to your list.
                   </div>
                   {unranked.map(item => (
-                    <div key={item.id} onClick={() => setDetail(item)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
+                    <div key={item.id} onClick={() => openRow(item.venue)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
                       <div style={{ width: 42, height: 42, borderRadius: 11, background: item.venue.bg_color || C.dark, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0, letterSpacing: '-.2px', opacity: 0.75 }}>
                         {venueInitials(item.venue.name)}
                       </div>
@@ -2265,8 +2453,10 @@ function ProfileScreen({ user, displayName, collection, onSignOut, onDeleteAccou
                 {item.photo_url
                   ? <img src={item.photo_url} alt="" loading="lazy" decoding="async" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', background: '#000' }} />
                   : item.venue.emoji}
-                {item.venue.status === 'closed' && (
-                  <div style={{ position: 'absolute', top: 4, left: 4, background: 'rgba(0,0,0,0.72)', color: '#fff', fontSize: 8, fontWeight: 700, letterSpacing: .3, padding: '1px 5px', borderRadius: 99 }}>CLOSED</div>
+                {isRetired(item.venue) && (
+                  <div style={{ position: 'absolute', top: 4, left: 4, background: 'rgba(0,0,0,0.72)', color: '#fff', fontSize: 8, fontWeight: 700, letterSpacing: .3, padding: '1px 5px', borderRadius: 99 }}>
+                    {item.venue.status === 'discontinued' ? 'NO MATCHES' : 'CLOSED'}
+                  </div>
                 )}
                 <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'linear-gradient(transparent,rgba(0,0,0,0.6))', padding: '12px 4px 4px' }}>
                   <div style={{ fontSize: 9, color: '#fff', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
@@ -2569,11 +2759,92 @@ function CollectorProfile({ collector, isFollowing, onFollow, onUnfollow, onBack
 // ─── ADMIN: REPORTED PHOTOS QUEUE (spec §4/§5) ───────────
 // Gated by profiles.is_admin. Accept → delete venue (FK cascade clears every
 // collector's copy + score). Reject → mark resolved, venue untouched.
-function AdminQueue({ reports, venues, onAccept, onReject, onBack }) {
+// Availability reports, grouped per spot, with the human-readable reason each
+// collector gave. Two live reports of the same reason retire a venue (021), so
+// this is where a wrong call gets caught — and reversed, which nothing else in
+// the app can do.
+function ClosureQueue({ groups, names, onResolve }) {
+  const [busy, setBusy] = useState(null)
+  const [err, setErr] = useState('')
+  const reasonLabel = (k) => REPORT_REASONS.find(r => r.key === k)?.title || 'No reason given (legacy)'
+
+  const act = async (venueId, reopen) => {
+    setBusy(venueId)
+    setErr('')
+    const ok = await onResolve?.(venueId, reopen)
+    setBusy(null)
+    if (ok === false) setErr('Couldn’t save that — try again.')
+  }
+
+  if (!groups.length) {
+    return (
+      <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
+        <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+        <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>Nothing reported</div>
+        <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>When collectors report a spot as out, discontinued, or closed, it lands here.</div>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      {err && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, lineHeight: 1.4 }}>{err}</div>}
+      {groups.map(({ venue, rows }) => (
+        <Card key={venue.id} style={{ padding: 14, marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap', marginBottom: 6 }}>
+            <span style={{ fontSize: 16, fontWeight: 700, color: C.text, letterSpacing: '-.2px' }}>{venue.name}</span>
+            {isRetired(venue)
+              ? <Tag label={retiredLabel(venue)} bg={C.redBg} color={C.red} />
+              : <Tag label="Still live" bg={C.greenBg} color={C.green} />}
+          </div>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>{venue.address || venue.city}</div>
+          {rows.map(r => (
+            <div key={r.id || `${r.user_id}-${r.venue_id}`} style={{ display: 'flex', alignItems: 'baseline', gap: 6, padding: '4px 0', borderTop: `0.5px solid ${C.border}` }}>
+              <i className="ti ti-point-filled" style={{ fontSize: 11, color: r.reason === 'closed_down' ? C.red : C.muted, flexShrink: 0 }} />
+              <div style={{ fontSize: 12.5, color: C.sec, lineHeight: 1.5 }}>
+                <span style={{ fontWeight: 700, color: C.text }}>{reasonLabel(r.reason)}</span>
+                {' — '}{names[r.user_id] || 'a collector'}
+              </div>
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button onClick={() => act(venue.id, true)} disabled={busy === venue.id}
+              style={{ flex: 1, padding: '10px', borderRadius: 11, border: 'none', background: C.green, color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: busy === venue.id ? 0.6 : 1 }}>
+              {isRetired(venue) ? 'Put it back on the map' : 'Dismiss — it’s fine'}
+            </button>
+            <button onClick={() => act(venue.id, false)} disabled={busy === venue.id}
+              style={{ flex: 1, padding: '10px', borderRadius: 11, border: `1.5px solid ${C.border}`, background: 'transparent', color: C.sec, fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: busy === venue.id ? 0.6 : 1 }}>
+              Clear reports, leave as is
+            </button>
+          </div>
+        </Card>
+      ))}
+    </>
+  )
+}
+
+function AdminQueue({ reports, venues, closureReports = [], onAccept, onReject, onResolveReports, onBack }) {
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
   const [names, setNames] = useState({}) // user id → display_name (best-effort, admin read)
   const [busyId, setBusyId] = useState(null)
   const [actionErr, setActionErr] = useState('')
+  const [adminTab, setAdminTab] = useState('photos') // photos | closures
+
+  // Closure reports arrive one row per reporter — group by venue so you review
+  // a SPOT ("2 people say it shut down"), not a stream of disconnected votes.
+  const closureGroups = useMemo(() => {
+    const byVenue = new Map()
+    closureReports.forEach(r => {
+      const v = r.venue || venueMap[r.venue_id]
+      if (!v) return
+      if (!byVenue.has(r.venue_id)) byVenue.set(r.venue_id, { venue: v, rows: [] })
+      byVenue.get(r.venue_id).rows.push(r)
+    })
+    // Retired spots first (those are the ones a mistake actually hurts), then
+    // the spots closest to the 2-report threshold.
+    return [...byVenue.values()].sort((a, b) =>
+      (isRetired(b.venue) ? 1 : 0) - (isRetired(a.venue) ? 1 : 0) || b.rows.length - a.rows.length)
+  }, [closureReports, venues]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Venue comes from the embedded FK join (r.venue); fall back to the client
   // array. Never drop a report — keep the queue count in sync with the badge.
@@ -2582,12 +2853,18 @@ function AdminQueue({ reports, venues, onAccept, onReject, onBack }) {
   // Resolve submitter + reporter names (needs migration 008's admin-read on
   // profiles; degrades to "a collector" if absent).
   useEffect(() => {
-    const ids = [...new Set(enriched.flatMap(r => [r.reporter_id, r.venue?.created_by]).filter(Boolean))]
+    const ids = [...new Set([
+      ...enriched.flatMap(r => [r.reporter_id, r.venue?.created_by]),
+      ...closureReports.map(r => r.user_id), // closure reporters need names too
+    ].filter(Boolean))]
     if (!ids.length) return
     supabase.from('profiles').select('id, display_name').in('id', ids).then(({ data }) => {
       if (data) setNames(Object.fromEntries(data.map(p => [p.id, p.display_name])))
     })
-  }, [reports]) // eslint-disable-line react-hooks/exhaustive-deps
+    // closureReports must be a dep: the two queues load independently, so a
+    // closures-only arrival would otherwise never re-run this and every closure
+    // reporter would render as "a collector" for the whole session.
+  }, [reports, closureReports]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const uname = (id) => (id && names[id]) ? names[id] : 'a collector'
 
@@ -2604,11 +2881,20 @@ function AdminQueue({ reports, venues, onAccept, onReject, onBack }) {
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '8px 16px 24px' }}>
-        <div style={{ fontSize: 28, fontWeight: 800, color: C.text, letterSpacing: '-.6px', marginTop: 6 }}>Reported photos</div>
-        <div style={{ fontSize: 13, color: C.muted, marginBottom: actionErr ? 8 : 18 }}>{enriched.length} pending</div>
+        <div style={{ fontSize: 28, fontWeight: 800, color: C.text, letterSpacing: '-.6px', marginTop: 6, marginBottom: 12 }}>Review</div>
+        <div style={{ display: 'flex', borderBottom: `0.5px solid ${C.border}`, marginBottom: 16 }}>
+          {[{ k: 'photos', l: 'Photos', n: enriched.length }, { k: 'closures', l: 'Closures', n: closureGroups.length }].map(t => (
+            <div key={t.k} onClick={() => setAdminTab(t.k)}
+              style={{ padding: '8px 14px 9px', fontSize: 14, fontWeight: adminTab === t.k ? 700 : 500, color: adminTab === t.k ? C.text : C.muted, cursor: 'pointer', borderBottom: adminTab === t.k ? `2px solid ${C.text}` : '2px solid transparent', marginBottom: -1 }}>
+              {t.l}{t.n > 0 ? ` · ${t.n}` : ''}
+            </div>
+          ))}
+        </div>
         {actionErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 14, lineHeight: 1.4 }}>{actionErr}</div>}
 
-        {enriched.length === 0 ? (
+        {adminTab === 'closures' ? (
+          <ClosureQueue groups={closureGroups} names={names} onResolve={onResolveReports} />
+        ) : enriched.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
             <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>Queue is clear</div>
@@ -2929,6 +3215,7 @@ export default function App() {
   const [myName, setMyName] = useState(null) // profiles.display_name — the user's real name
   const [showNamePrompt, setShowNamePrompt] = useState(false) // existing user with no real name yet
   const [fakeReports, setFakeReports] = useState([]) // pending fake_reports (admin only)
+  const [closureReports, setClosureReports] = useState([]) // live availability reports (admin only)
   const [showAdmin, setShowAdmin] = useState(false)
   const [showInvite, setShowInvite] = useState(false)
   const [showFind, setShowFind] = useState(false)
@@ -3011,17 +3298,29 @@ export default function App() {
       })
   }, [user])
 
-  // Load this user's reports so flagged venues stay hidden across reloads
+  // Load this user's reports so flagged venues stay hidden across reloads.
+  // LIVE rows only: a repost (or an admin reopen) supersedes the old reports,
+  // and the spot has to come back for the person who reported it too — otherwise
+  // it's back for everyone except the one collector who'd most like to know.
+  // Only the retiring reasons hide a pin, matching handleFlag.
   useEffect(() => {
     if (!user) { setReported([]); return }
-    supabase
-      .from('reports')
-      .select('venue_id')
-      .eq('user_id', user.id)
-      .then(({ data, error }) => {
-        if (error) { console.error('Failed to load reports', error); return }
-        setReported(data || [])
-      })
+    let cancelled = false
+    const run = async () => {
+      let { data, error } = await supabase
+        .from('reports').select('venue_id, reason')
+        .eq('user_id', user.id).is('superseded_at', null)
+        .in('reason', ['closed_down', 'discontinued'])
+      // pre-021 DBs have neither column — fall back to the old "any report hides it"
+      if (error && isMissingColumn(error)) {
+        ;({ data, error } = await supabase.from('reports').select('venue_id').eq('user_id', user.id))
+      }
+      if (cancelled) return
+      if (error) { console.error('Failed to load reports', error); return }
+      setReported(data || [])
+    }
+    run()
+    return () => { cancelled = true }
   }, [user])
 
   // Load my profile flags (admin + avatar). Own profile is readable under the
@@ -3063,6 +3362,31 @@ export default function App() {
   }, [user])
 
   useEffect(() => { if (isAdmin) loadFakeReports() }, [isAdmin, loadFakeReports])
+
+  // Closure reports (021 gave admins a read on `reports` — before that nobody
+  // could see these, and they retired venues with no human in the loop).
+  // Live rows only: superseded ones were already resolved or overtaken by a repost.
+  const loadClosureReports = useCallback(() => {
+    if (!user) return
+    supabase.from('reports').select('*, venue:venues(*)').is('superseded_at', null)
+      .then(({ data, error }) => {
+        // pre-021 the column doesn't exist and admins have no read — stay empty
+        if (error) { setClosureReports([]); return }
+        setClosureReports(data || [])
+      })
+  }, [user])
+
+  useEffect(() => { if (isAdmin) loadClosureReports() }, [isAdmin, loadClosureReports])
+
+  // Admin override: clear a venue's live reports, optionally putting it back on
+  // the map (venues has no UPDATE policy at all, so this must go through the RPC).
+  const handleResolveReports = async (venueId, reopen) => {
+    const { error } = await supabase.rpc('admin_resolve_reports', { p_venue_id: venueId, p_reopen: reopen })
+    if (error) { console.error('Resolve reports failed', error); return false }
+    setClosureReports(prev => prev.filter(r => r.venue_id !== venueId))
+    if (reopen) setVenues(prev => prev.map(v => (v.id === venueId ? { ...v, status: 'active', closed_at: null } : v)))
+    return true
+  }
 
   // Follow graph — who I follow (via SECURITY DEFINER RPC; profiles are locked down)
   const loadFollowing = useCallback(() => {
@@ -3155,14 +3479,35 @@ export default function App() {
     return merged
   }
 
-  const handleFlag = async (venueId) => {
+  // `reason` decides what happens (migration 021): only 'closed_down' can close a
+  // venue, only 'discontinued' can retire its matchbooks. 'out_temporarily' and
+  // 'unknown' are advisory — they never retire anything.
+  //
+  // ignoreDuplicates is FALSE so changing your mind rewrites the reason (the
+  // trigger fires on update too). superseded_at MUST be reset: reports is
+  // unique(user_id,venue_id), so a re-report can only ever UPDATE your existing
+  // row — and if a repost superseded it, leaving that stamp in place would spend
+  // you as a reporter forever, making a genuinely dead spot un-retirable by the
+  // very people who know it's dead.
+  // Columns may not exist pre-021, so strip and retry rather than lose the report.
+  const handleFlag = async (venueId, reason = 'unknown') => {
     if (!user) return false
-    // upsert + ignoreDuplicates so a re-flag after reload doesn't hit the unique constraint
-    const { error } = await supabase
-      .from('reports')
-      .upsert({ user_id: user.id, venue_id: venueId }, { onConflict: 'user_id,venue_id', ignoreDuplicates: true })
-    if (error) { console.error('Flag failed', error); return false }
-    setReported(prev => (prev.some(r => r.venue_id === venueId) ? prev : [...prev, { venue_id: venueId }]))
+    const row = { user_id: user.id, venue_id: venueId, reason, superseded_at: null }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { error } = await supabase
+        .from('reports')
+        .upsert(row, { onConflict: 'user_id,venue_id', ignoreDuplicates: false })
+      if (!error) break
+      if (isMissingColumn(error) && 'superseded_at' in row) { delete row.superseded_at; continue }
+      if (isMissingColumn(error) && 'reason' in row) { delete row.reason; continue }
+      console.error('Flag failed', error)
+      return false
+    }
+    // Only the retiring reasons hide the pin from your own map. "They're out
+    // right now" is a snapshot of one visit, not a verdict on the spot — hiding
+    // it forever would bury a place that restocks next week.
+    const hides = reason === 'closed_down' || reason === 'discontinued'
+    if (hides) setReported(prev => (prev.some(r => r.venue_id === venueId) ? prev : [...prev, { venue_id: venueId }]))
     return true
   }
 
@@ -3202,8 +3547,12 @@ export default function App() {
   }
 
   const handleAdded = (newVenue, collectionRow) => {
-    // newVenue may already exist locally (dedup link), so upsert rather than append
-    setVenues(prev => (prev.some(v => v.id === newVenue.id) ? prev : [...prev, newVenue]))
+    // newVenue may already exist locally (dedup link) — REPLACE it rather than
+    // keeping the local copy, so a status change (e.g. a repost flipping it back
+    // to active) actually reaches the map instead of staying stale until reload.
+    setVenues(prev => (prev.some(v => v.id === newVenue.id)
+      ? prev.map(v => (v.id === newVenue.id ? newVenue : v))
+      : [...prev, newVenue]))
     if (collectionRow) {
       // replace in place if it already exists (e.g. a re-collect that added a photo)
       setCollection(prev => (prev.some(c => c.id === collectionRow.id)
@@ -3374,13 +3723,16 @@ export default function App() {
           collectedMapboxIds={collectedMapboxIds}
           onRankingDone={() => { refreshCollection(); setShowSubmit(false); setTab('rankings') }}
           onSheetOpenChange={setSheetOpen}
+          onFlag={handleFlag}
         />
       ) : showAdmin ? (
         <AdminQueue
           reports={fakeReports}
           venues={venues}
+          closureReports={closureReports}
           onAccept={handleAcceptReport}
           onReject={handleRejectReport}
+          onResolveReports={handleResolveReports}
           onBack={() => setShowAdmin(false)}
         />
       ) : showInvite ? (

@@ -109,7 +109,8 @@ create table venues (
   created_by uuid references auth.users(id),
   verified boolean default false,
   mapbox_id text unique,                 -- stable Search Box POI id (dedup key)
-  status text not null default 'active' check (status in ('active','closed')),
+  -- 'discontinued' = still in business, stopped making matchbooks (021)
+  status text not null default 'active' check (status in ('active','closed','discontinued')),
   closed_at timestamptz,
   added_manually boolean default false,  -- via the "can't find it" manual entry
   kind text not null default 'venue' check (kind in ('venue','keepsake')) -- keepsake = no place (020)
