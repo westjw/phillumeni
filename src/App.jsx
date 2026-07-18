@@ -795,13 +795,15 @@ function MatchbookDetail({ item, venue, title, backLabel, onBack, onReRank, onRe
 }
 
 // ─── COLLECTION SCREEN ───────────────────────────────────
-function Collection({ items, venues, onRemove, onSubmit, onReRank, onAddPhotos }) {
+function Collection({ items, venues, onRemove, onSubmit, onReRank, onAddPhotos, myListings = [], offerCounts = {}, onToggleTrade, onListingPhoto, onOpenOffers }) {
   const [view, setView] = useState('grid')
   const [detail, setDetail] = useState(null)
+  const [tab, setTab] = useState('all') // all | trade
 
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
   const collected = items.map(item => ({ ...item, venue: venueMap[item.venue_id] })).filter(i => i.venue)
   const hoods = [...new Set(collected.map(i => i.venue.neighborhood).filter(Boolean))]
+  const listedCount = (myListings || []).filter(l => l.status !== 'removed').length
   // Matchbooks per city, most first — replaces the single-city "NYC progress".
   const byCity = Object.entries(collected.reduce((m, i) => {
     const c = isKeepsake(i.venue) ? 'Keepsakes' : (i.venue.city || 'Unknown'); m[c] = (m[c] || 0) + 1; return m
@@ -826,22 +828,46 @@ function Collection({ items, venues, onRemove, onSubmit, onReRank, onAddPhotos }
       <SBar title="Collection" />
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '14px 16px 10px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
             <div style={{ fontSize: 20, fontWeight: 700, color: C.text, letterSpacing: '-.4px' }}>Your collection</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <button onClick={onSubmit} style={{ display: 'flex', alignItems: 'center', gap: 5, background: C.dark, color: '#fff', border: 'none', borderRadius: 99, padding: '7px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
                 <i className="ti ti-plus" style={{ fontSize: 12 }} /> Submit
               </button>
-              <div style={{ display: 'flex', gap: 2, background: C.surface, borderRadius: 9, padding: 3, border: `0.5px solid ${C.border}` }}>
-                {['grid', 'list'].map(v => (
-                  <button key={v} onClick={() => setView(v)} style={{ width: 30, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, border: 'none', cursor: 'pointer', background: view === v ? C.card : 'transparent', color: view === v ? C.text : C.muted }}>
-                    <i className={`ti ti-${v === 'grid' ? 'layout-grid' : 'list'}`} style={{ fontSize: 13 }} />
-                  </button>
-                ))}
-              </div>
+              {tab === 'all' && (
+                <div style={{ display: 'flex', gap: 2, background: C.surface, borderRadius: 9, padding: 3, border: `0.5px solid ${C.border}` }}>
+                  {['grid', 'list'].map(v => (
+                    <button key={v} onClick={() => setView(v)} style={{ width: 30, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 6, border: 'none', cursor: 'pointer', background: view === v ? C.card : 'transparent', color: view === v ? C.text : C.muted }}>
+                      <i className={`ti ti-${v === 'grid' ? 'layout-grid' : 'list'}`} style={{ fontSize: 13 }} />
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
+          <div style={{ display: 'flex', borderBottom: `0.5px solid ${C.border}`, marginBottom: 14 }}>
+            {[{ k: 'all', l: 'All' }, { k: 'trade', l: 'For trade', n: listedCount }].map(t => (
+              <div key={t.k} onClick={() => setTab(t.k)}
+                style={{ padding: '7px 14px 8px', fontSize: 14, fontWeight: tab === t.k ? 700 : 500, color: tab === t.k ? C.text : C.muted, cursor: 'pointer', borderBottom: tab === t.k ? `2px solid ${C.text}` : '2px solid transparent', marginBottom: -1 }}>
+                {t.l}{t.n > 0 ? ` · ${t.n}` : ''}
+              </div>
+            ))}
+          </div>
+
+          {tab === 'trade' && (
+            <ForTrade
+              collected={collected}
+              myListings={myListings}
+              offerCounts={offerCounts}
+              onToggle={onToggleTrade}
+              onPhoto={onListingPhoto}
+              onOpenOffers={onOpenOffers}
+            />
+          )}
+        </div>
+        {tab === 'trade' ? null : (<>
+        <div style={{ padding: '0 16px 10px' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8, marginBottom: 12 }}>
             {[{ n: collected.length, l: 'matchbooks' }, { n: new Set(collected.map(i => i.venue.city).filter(Boolean)).size, l: 'cities' }, { n: hoods.length, l: 'hoods' }, { n: collected.filter(i => i.score != null).length, l: 'ranked' }].map((s, i) => (
               <div key={i} style={{ background: C.surface, borderRadius: 12, padding: '9px 10px', textAlign: 'center' }}>
@@ -913,9 +939,121 @@ function Collection({ items, venues, onRemove, onSubmit, onReRank, onAddPhotos }
             ))}
           </div>
         )}
+        </>)}
         <div style={{ height: 24 }} />
       </div>
     </div>
+  )
+}
+
+// The For trade tab: one toggle per matchbook, with the three removal states
+// from spec §4.2 — free exit, confirm-and-decline, and locked mid-trade.
+function ForTrade({ collected, myListings, offerCounts, onToggle, onPhoto, onOpenOffers }) {
+  const [confirm, setConfirm] = useState(null) // { item, listing, pending }
+  const [busy, setBusy] = useState(null)
+  const byVenue = useMemo(() => Object.fromEntries((myListings || []).map(l => [l.venue_id, l])), [myListings])
+  const fileRef = useRef(null)
+  const [photoFor, setPhotoFor] = useState(null)
+
+  // Keepsakes aren't inventory — your wedding matchbook isn't up for swap.
+  const tradeable = useMemo(() => collected.filter(i => i.venue && !isKeepsake(i.venue)), [collected])
+
+  const toggle = async (item) => {
+    const l = byVenue[item.venue_id]
+    const pending = offerCounts[l?.id] || 0
+    if (l?.status === 'in_trade') return                       // state C: locked
+    if (l?.status === 'active' && pending > 0) { setConfirm({ item, listing: l, pending }); return } // state B
+    setBusy(item.venue_id)
+    await onToggle?.(item, !(l && l.status === 'active'))      // state A: free
+    setBusy(null)
+  }
+
+  return (
+    <>
+      <div style={{ fontSize: 12.5, color: C.muted, lineHeight: 1.5, marginBottom: 12 }}>
+        Toggle a matchbook to list it. Photo optional — it shows condition. No addresses, ever; that's sorted in private chat.
+      </div>
+      <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }}
+        onChange={async (e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f && photoFor) { setBusy(photoFor.venue_id); await onPhoto?.(photoFor, f); setBusy(null); setPhotoFor(null) } }} />
+
+      {tradeable.length === 0 && (
+        <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: C.muted, fontSize: 13, lineHeight: 1.6 }}>
+          Nothing to trade yet — collect a matchbook first.
+        </div>
+      )}
+
+      {tradeable.map(item => {
+        const l = byVenue[item.venue_id]
+        const listed = l && l.status === 'active'
+        const inTrade = l && l.status === 'in_trade'
+        const pending = offerCounts[l?.id] || 0
+        const on = listed || inTrade
+        return (
+          <div key={item.id} style={{ border: `1.5px solid ${on ? C.amberBd : C.border}`, borderRadius: 14, marginBottom: 10, overflow: 'hidden', background: C.card }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 13px' }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, background: item.venue.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0, overflow: 'hidden', position: 'relative' }}>
+                {(l?.photo_url || item.photo_url)
+                  ? <img src={l?.photo_url || item.photo_url} alt="" loading="lazy" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+                  : item.venue.emoji}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.venue.name}</div>
+                <div style={{ fontSize: 11.5, color: C.muted }}>{item.venue.neighborhood || item.venue.city}</div>
+              </div>
+              {inTrade && <Tag label="In trade" bg={C.amberBg} color={C.amber} />}
+              {listed && <Tag label="Trading" bg={C.amberBg} color={C.amber} />}
+              <div onClick={() => !busy && toggle(item)} title={inTrade ? 'In an active trade — complete or cancel it first' : undefined}
+                style={{ width: 46, height: 27, borderRadius: 99, flexShrink: 0, background: on ? C.amber : C.border, position: 'relative', cursor: inTrade ? 'not-allowed' : 'pointer', opacity: inTrade ? 0.5 : (busy === item.venue_id ? 0.6 : 1), transition: 'background .15s' }}>
+                <div style={{ position: 'absolute', top: 3, left: on ? 22 : 3, width: 21, height: 21, borderRadius: '50%', background: '#fff', transition: 'left .15s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }} />
+              </div>
+            </div>
+
+            {inTrade && (
+              <div style={{ background: C.surface, padding: '8px 13px', fontSize: 11.5, color: C.muted }}>
+                In an active trade — complete or cancel it first.
+              </div>
+            )}
+            {listed && (
+              <div style={{ background: l?.photo_url ? C.amberBg : C.surface, padding: '9px 13px', display: 'flex', alignItems: 'center', gap: 9 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: l?.photo_url ? C.amber : C.text }}>
+                    {l?.photo_url ? 'Photo added' : 'Add photo of your copy'}
+                  </div>
+                  <div style={{ fontSize: 11, color: C.muted }}>{l?.photo_url ? 'Visible to traders' : 'Optional — shows condition'}</div>
+                </div>
+                <button onClick={() => { setPhotoFor(l); fileRef.current?.click() }}
+                  style={{ flexShrink: 0, background: 'none', border: 'none', color: C.amber, fontSize: 12.5, fontWeight: 700, cursor: 'pointer', textDecoration: 'underline' }}>
+                  {l?.photo_url ? 'Change' : 'Add →'}
+                </button>
+              </div>
+            )}
+            {listed && pending > 0 && (
+              <button onClick={() => onOpenOffers?.({ ...l, venue: item.venue })}
+                style={{ width: '100%', padding: '11px', border: 'none', borderTop: `0.5px solid ${C.border}`, background: C.dark, color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                View {pending} {pending === 1 ? 'offer' : 'offers'} →
+              </button>
+            )}
+          </div>
+        )
+      })}
+
+      {/* State B: pending offers die with the listing, so say so first */}
+      {confirm && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 40, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={() => setConfirm(null)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+          <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px', maxWidth: 500, margin: '0 auto', width: '100%' }}>
+            <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
+            <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 6 }}>Remove listing?</div>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 18 }}>
+              {confirm.item.venue.name} has {confirm.pending} pending {confirm.pending === 1 ? 'offer' : 'offers'}. Removing it declines {confirm.pending === 1 ? 'that offer' : 'them all'}.
+            </div>
+            <button onClick={async () => { const c = confirm; setConfirm(null); setBusy(c.item.venue_id); await onToggle?.(c.item, false); setBusy(null) }}
+              style={{ width: '100%', padding: 14, background: C.red, color: '#fff', border: 'none', borderRadius: 13, fontSize: 15, fontWeight: 700, cursor: 'pointer', marginBottom: 8 }}>Remove listing</button>
+            <button onClick={() => setConfirm(null)} style={{ width: '100%', padding: 13, background: 'none', border: `1.5px solid ${C.border}`, borderRadius: 13, color: C.text, fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Keep listing</button>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -2408,6 +2546,10 @@ function ProfileScreen({ user, displayName, collection, onSignOut, onDeleteAccou
             )}
           </div>
 
+          {/* Your trade record — the same thing other collectors see before
+              they accept your offer. Accountability only works if it's public. */}
+          <TradeRecord userId={user?.id} name={name} />
+
           {/* Blocked — only appears once you've blocked someone. A block you
               can't undo isn't a feature, it's a trap (and Apple checks). */}
           {blocked.length > 0 && (
@@ -2735,6 +2877,7 @@ function CollectorProfile({ collector, isFollowing, onFollow, onUnfollow, onBloc
             <div style={{ fontSize: 12.5, color: C.muted, marginTop: 1 }}>
               {following ? `${ranked.length} ranked${cities ? ` · ${cities} ${cities === 1 ? 'city' : 'cities'}` : ''}` : 'Follow to see their collection'}
             </div>
+            <TradeRecord userId={collector.id} name={collector.display_name} compact />
           </div>
           <button onClick={toggle} disabled={busy}
             style={{ flexShrink: 0, fontSize: 12.5, fontWeight: 700, padding: '8px 16px', borderRadius: 99, cursor: busy ? 'default' : 'pointer', border: following ? `1px solid ${C.border}` : 'none', background: following ? 'transparent' : C.dark, color: following ? C.sec : '#fff', opacity: busy ? 0.6 : 1 }}>
@@ -2872,7 +3015,7 @@ function ClosureQueue({ groups, names, onResolve }) {
   )
 }
 
-function AdminQueue({ reports, venues, closureReports = [], onAccept, onReject, onResolveReports, onBack }) {
+function AdminQueue({ reports, venues, closureReports = [], chatReports = [], onAccept, onReject, onResolveReports, onResolveChatReport, onBack }) {
   const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
   const [names, setNames] = useState({}) // user id → display_name (best-effort, admin read)
   const [busyId, setBusyId] = useState(null)
@@ -2905,6 +3048,7 @@ function AdminQueue({ reports, venues, closureReports = [], onAccept, onReject, 
     const ids = [...new Set([
       ...enriched.flatMap(r => [r.reporter_id, r.venue?.created_by]),
       ...closureReports.map(r => r.user_id), // closure reporters need names too
+      ...chatReports.map(r => r.reporter_id),
     ].filter(Boolean))]
     if (!ids.length) return
     supabase.from('profiles').select('id, display_name').in('id', ids).then(({ data }) => {
@@ -2913,7 +3057,7 @@ function AdminQueue({ reports, venues, closureReports = [], onAccept, onReject, 
     // closureReports must be a dep: the two queues load independently, so a
     // closures-only arrival would otherwise never re-run this and every closure
     // reporter would render as "a collector" for the whole session.
-  }, [reports, closureReports]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [reports, closureReports, chatReports]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const uname = (id) => (id && names[id]) ? names[id] : 'a collector'
 
@@ -2932,7 +3076,7 @@ function AdminQueue({ reports, venues, closureReports = [], onAccept, onReject, 
       <div style={{ flex: 1, overflowY: 'auto', padding: '8px 16px 24px' }}>
         <div style={{ fontSize: 28, fontWeight: 800, color: C.text, letterSpacing: '-.6px', marginTop: 6, marginBottom: 12 }}>Review</div>
         <div style={{ display: 'flex', borderBottom: `0.5px solid ${C.border}`, marginBottom: 16 }}>
-          {[{ k: 'photos', l: 'Photos', n: enriched.length }, { k: 'closures', l: 'Closures', n: closureGroups.length }].map(t => (
+          {[{ k: 'photos', l: 'Photos', n: enriched.length }, { k: 'closures', l: 'Closures', n: closureGroups.length }, { k: 'chats', l: 'Chats', n: chatReports.length }].map(t => (
             <div key={t.k} onClick={() => setAdminTab(t.k)}
               style={{ padding: '8px 14px 9px', fontSize: 14, fontWeight: adminTab === t.k ? 700 : 500, color: adminTab === t.k ? C.text : C.muted, cursor: 'pointer', borderBottom: adminTab === t.k ? `2px solid ${C.text}` : '2px solid transparent', marginBottom: -1 }}>
               {t.l}{t.n > 0 ? ` · ${t.n}` : ''}
@@ -2941,7 +3085,32 @@ function AdminQueue({ reports, venues, closureReports = [], onAccept, onReject, 
         </div>
         {actionErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 14, lineHeight: 1.4 }}>{actionErr}</div>}
 
-        {adminTab === 'closures' ? (
+        {adminTab === 'chats' ? (
+          chatReports.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>No reported conversations</div>
+              <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>Trade-chat reports land here for review.</div>
+            </div>
+          ) : chatReports.map(r => (
+            <Card key={r.id} style={{ padding: 13, marginBottom: 12 }}>
+              <div style={{ fontSize: 14.5, fontWeight: 700, color: C.text, marginBottom: 2 }}>
+                {uname(r.reporter_id)} reported {r.reported_name || 'a collector'}
+              </div>
+              <div style={{ fontSize: 11.5, color: C.muted, marginBottom: 8 }}>
+                {r.chat_id ? `Trade chat #${r.chat_id}` : 'Chat no longer exists'} · {agoLabel(r.created_at)}
+              </div>
+              {r.detail && <div style={{ background: C.surface, borderRadius: 11, padding: '9px 12px', marginBottom: 10, fontSize: 12.5, color: C.sec, fontStyle: 'italic', lineHeight: 1.5 }}>“{r.detail}”</div>}
+              <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.5, marginBottom: 10 }}>
+                Read the chat via SQL (trade_messages, chat_id {r.chat_id ?? '—'}). Heavy-handed tools if needed: block guidance, or account action.
+              </div>
+              <button onClick={() => onResolveChatReport?.(r.id)}
+                style={{ width: '100%', padding: '10px', borderRadius: 11, border: `1.5px solid ${C.border}`, background: 'transparent', color: C.sec, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                Mark resolved
+              </button>
+            </Card>
+          ))
+        ) : adminTab === 'closures' ? (
           <ClosureQueue groups={closureGroups} names={names} onResolve={onResolveReports} />
         ) : enriched.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
@@ -3226,19 +3395,797 @@ function NamePrompt({ user, onSaved }) {
 }
 
 // ─── TAB BAR ─────────────────────────────────────────────
-function TabBar({ active, onNav }) {
+// ─── TRADES ──────────────────────────────────────────────
+// Peer-to-peer matchbook exchange (docs/trades-spec.md). Identity is the real
+// name — 017 removed usernames, so the spec's @handles are display names here.
+
+const CANCEL_META = {
+  mutual:       { icon: '🤝', label: 'Mutual cancel' },
+  they_ghosted: { icon: '👻', label: 'Didn’t follow through' },
+  i_backed_out: { icon: '🙋', label: 'Backed out' },
+}
+
+// A trader's record, shown wherever you're deciding whether to deal with them.
+// The whole trust model: phillumeni can't enforce a trade, so it makes the
+// history visible instead.
+function TradeRecord({ userId, name, compact = false }) {
+  const [rec, setRec] = useState(null)
+  useEffect(() => {
+    if (!userId) return
+    let cancelled = false
+    supabase.rpc('trade_record', { p_user: userId }).then(({ data, error }) => {
+      if (!cancelled) setRec(error ? null : (data?.[0] || null)) // pre-023: no RPC, render nothing
+    })
+    return () => { cancelled = true }
+  }, [userId])
+  if (!rec) return null
+  const entries = Array.isArray(rec.entries) ? rec.entries : []
+
+  if (compact) {
+    return (
+      <span style={{ fontSize: 12, fontWeight: 700, color: rec.cancelled > 0 ? C.muted : C.green }}>
+        ✓ {rec.completed} {rec.completed === 1 ? 'trade' : 'trades'}
+        {rec.cancelled > 0 && <span style={{ color: C.red }}> · {rec.cancelled} cancelled</span>}
+      </span>
+    )
+  }
+  return (
+    <>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+        <div style={{ background: C.greenBg, border: `1px solid ${C.green}33`, borderRadius: 12, padding: '10px', textAlign: 'center' }}>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.green }}>{rec.completed}</div>
+          <div style={{ fontSize: 9, color: C.green, marginTop: 1, textTransform: 'uppercase', letterSpacing: .4, fontWeight: 700 }}>Trades ✓</div>
+        </div>
+        <div style={{ background: rec.cancelled > 0 ? C.redBg : C.surface, border: `1px solid ${rec.cancelled > 0 ? C.red + '33' : 'transparent'}`, borderRadius: 12, padding: '10px', textAlign: 'center' }}>
+          <div style={{ fontSize: 20, fontWeight: 800, color: rec.cancelled > 0 ? C.red : C.muted }}>{rec.cancelled}</div>
+          <div style={{ fontSize: 9, color: rec.cancelled > 0 ? C.red : C.muted, marginTop: 1, textTransform: 'uppercase', letterSpacing: .4, fontWeight: 700 }}>Cancelled</div>
+        </div>
+      </div>
+      {rec.cancelled === 0 && rec.completed > 0 && (
+        <div style={{ background: C.greenBg, border: `1px solid ${C.green}33`, borderRadius: 12, padding: '11px 13px', marginBottom: 12 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: C.green, marginBottom: 2 }}>✓ Perfect trade record</div>
+          <div style={{ fontSize: 12, color: C.sec, lineHeight: 1.5 }}>{rec.completed} {rec.completed === 1 ? 'trade' : 'trades'}, no cancellations. Other collectors see this before accepting an offer.</div>
+        </div>
+      )}
+      {/* What actually got traded — spec §4.9's chips, ~6 visible + overflow */}
+      {Array.isArray(rec.chips) && rec.chips.length > 0 && (
+        <div style={{ background: C.greenBg, border: `1px solid ${C.green}33`, borderRadius: 12, padding: '11px 13px', marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: C.green, letterSpacing: '.4px', marginBottom: 8 }}>{rec.completed} COMPLETED {rec.completed === 1 ? 'TRADE' : 'TRADES'}</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {rec.chips.slice(0, 6).map((ch, i) => (
+              <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 5, background: C.card, borderRadius: 99, padding: '5px 11px', fontSize: 12.5, fontWeight: 700, color: C.text }}>
+                <span>{ch.emoji}</span>{ch.name}
+              </span>
+            ))}
+            {rec.chips.length > 6 && (
+              <span style={{ background: C.card, borderRadius: 99, padding: '5px 11px', fontSize: 12.5, fontWeight: 700, color: C.muted }}>+{rec.chips.length - 6} more</span>
+            )}
+          </div>
+        </div>
+      )}
+      {/* Blamed cancellations are the red mark; mutual cancels list neutrally —
+          a red "CANCELLED · 2" over a "Perfect record" was reading as a bug. */}
+      {(() => {
+        const blamed = entries.filter(e => e.reason !== 'mutual')
+        const mutual = entries.filter(e => e.reason === 'mutual')
+        const row = (e, i, red) => {
+          const m = CANCEL_META[e.reason] || {}
+          return (
+            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'baseline', padding: '5px 0', borderTop: i ? `0.5px solid ${red ? C.red + '22' : C.border}` : 'none' }}>
+              <span style={{ fontSize: 13 }}>{m.icon}</span>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
+                  {e.reason === 'they_ghosted' && e.by ? `Reported by ${e.by}` : m.label}
+                </div>
+                <div style={{ fontSize: 11.5, color: C.muted }}>
+                  {e.reason === 'they_ghosted' ? m.label : e.reason === 'mutual' ? 'No blame either side' : 'Cancelled by them'}
+                  {e.at ? ` · ${new Date(e.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}
+                </div>
+              </div>
+            </div>
+          )
+        }
+        return (
+          <>
+            {blamed.length > 0 && (
+              <div style={{ background: C.redBg, border: `1px solid ${C.red}22`, borderRadius: 12, padding: '11px 13px', marginBottom: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: C.red, letterSpacing: '.4px', marginBottom: 8 }}>CANCELLED TRADES · {blamed.length}</div>
+                {blamed.map((e, i) => row(e, i, true))}
+              </div>
+            )}
+            {mutual.length > 0 && (
+              <div style={{ background: C.surface, borderRadius: 12, padding: '11px 13px', marginBottom: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, letterSpacing: '.4px', marginBottom: 8 }}>MUTUAL CANCELS · {mutual.length}</div>
+                {mutual.map((e, i) => row(e, i, false))}
+              </div>
+            )}
+          </>
+        )
+      })()}
+    </>
+  )
+}
+
+// Browse every listing, plus the trades you're already in. The city chips filter
+// by the MATCHBOOK's city — what you're hunting, not where the trader lives.
+function Trades({ user, onOffer, onOpenChat, onSeenOffers, onSheetOpenChange }) {
+  const [tab, setTab] = useState('browse') // browse | mine
+  const [allRows, setAllRows] = useState(null)
+  const [city, setCity] = useState('')
+  const [chats, setChats] = useState(null)
+  const [withdrawing, setWithdrawing] = useState(null)
+
+  // Fetch ONCE unfiltered; the city filter is client-side. Filtering server-side
+  // derived the chips from the filtered set — pick a city and every other chip
+  // vanished, including your way back to All.
+  useEffect(() => {
+    let cancelled = false
+    setAllRows(null)
+    supabase.rpc('browse_trades').then(({ data, error }) => {
+      if (!cancelled) setAllRows(error ? [] : (data || []))
+    })
+    return () => { cancelled = true }
+  }, [tab])
+
+  useEffect(() => {
+    let cancelled = false
+    supabase.rpc('my_trades').then(({ data, error }) => {
+      if (!cancelled) setChats(error ? [] : (data || []))
+    })
+    return () => { cancelled = true }
+  }, [tab])
+
+  // Your outgoing offers — the only place a declined offer is ever announced.
+  // Opening the tab marks them seen, which clears them from the badge.
+  const [myOffers, setMyOffers] = useState(null)
+  useEffect(() => {
+    if (tab !== 'mine') return
+    let cancelled = false
+    supabase.rpc('my_offers').then(({ data, error }) => {
+      if (!cancelled) setMyOffers(error ? [] : (data || []))
+      supabase.rpc('mark_offers_seen').then(() => onSeenOffers?.())
+    })
+    return () => { cancelled = true }
+  }, [tab])
+
+  const cities = useMemo(() => [...new Set((allRows || []).map(r => r.city).filter(Boolean))].sort(), [allRows])
+  const rows = allRows === null ? null : allRows.filter(r => !city || r.city === city)
+  const active = (chats || []).filter(c => c.status === 'active')
+
+  const withdraw = async (r) => {
+    setWithdrawing(r.listing_id)
+    const { error } = await supabase.rpc('decline_offer', { p_offer_id: r.my_offer_id })
+    if (!error) setAllRows(prev => (prev || []).map(x => (x.listing_id === r.listing_id ? { ...x, my_offer_id: null, offer_count: Math.max(0, x.offer_count - 1) } : x)))
+    setWithdrawing(null)
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}>
+      <SBar />
+      <div style={{ padding: '12px 16px 0', flexShrink: 0 }}>
+        <div style={{ fontSize: 28, fontWeight: 800, color: C.text, letterSpacing: '-.6px', marginBottom: 2 }}>Trades</div>
+        <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 12 }}>Swap matchbooks with other collectors. No addresses, ever.</div>
+        <div style={{ display: 'flex', borderBottom: `0.5px solid ${C.border}` }}>
+          {[{ k: 'browse', l: 'Browse' }, { k: 'mine', l: 'My trades', n: active.length }].map(t => (
+            <div key={t.k} onClick={() => setTab(t.k)}
+              style={{ padding: '8px 14px 9px', fontSize: 14, fontWeight: tab === t.k ? 700 : 500, color: tab === t.k ? C.text : C.muted, cursor: 'pointer', borderBottom: tab === t.k ? `2px solid ${C.text}` : '2px solid transparent', marginBottom: -1 }}>
+              {t.l}{t.n > 0 ? ` · ${t.n}` : ''}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {tab === 'browse' ? (
+          <>
+            {cities.length > 0 && (
+              <div style={{ display: 'flex', gap: 7, overflowX: 'auto', padding: '12px 16px 4px' }}>
+                {[{ v: '', l: 'All' }, ...cities.map(c => ({ v: c, l: c }))].map(c => (
+                  <button key={c.v} onClick={() => setCity(c.v)}
+                    style={{ flexShrink: 0, padding: '7px 15px', borderRadius: 99, fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: city === c.v ? 'none' : `1px solid ${C.border}`, background: city === c.v ? C.dark : 'transparent', color: city === c.v ? '#fff' : C.sec }}>
+                    {c.l}
+                  </button>
+                ))}
+              </div>
+            )}
+            {rows === null ? (
+              <div style={{ textAlign: 'center', padding: '4rem 1.5rem', color: C.muted, fontSize: 13 }}>Loading…</div>
+            ) : rows.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '4rem 1.5rem' }}>
+                <div style={{ fontSize: 40, marginBottom: 12 }}>🔄</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>Nothing up for trade yet</div>
+                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>List one from your Collection — the For trade tab — and it shows up here for everyone.</div>
+              </div>
+            ) : (
+              <div style={{ padding: '10px 16px 24px' }}>
+                {rows.map(r => (
+                  <Card key={r.listing_id} style={{ padding: 0, marginBottom: 12, overflow: 'hidden' }}>
+                    <div style={{ position: 'relative', height: 150, background: r.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {r.photo_url
+                        ? <img src={r.photo_url} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        : <span style={{ fontSize: 46 }}>{r.emoji}</span>}
+                      {r.offer_count > 0 && (
+                        <span style={{ position: 'absolute', top: 10, left: 10, background: C.amber, color: '#fff', fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 99 }}>
+                          {r.offer_count} {r.offer_count === 1 ? 'offer' : 'offers'}
+                        </span>
+                      )}
+                      <span style={{ position: 'absolute', top: 10, right: 10, background: r.photo_url ? 'rgba(0,0,0,0.7)' : C.surface, color: r.photo_url ? '#fff' : C.muted, fontSize: 10.5, fontWeight: 700, padding: '4px 9px', borderRadius: 99 }}>
+                        {r.photo_url ? '📷 Photo' : 'No photo'}
+                      </span>
+                    </div>
+                    <div style={{ padding: '12px 14px' }}>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: C.text, letterSpacing: '-.2px' }}>{r.venue_name}</div>
+                      <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 10 }}>{[r.neighborhood, r.city].filter(Boolean).join(', ')}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                        {r.owner_avatar
+                          ? <img src={r.owner_avatar} alt="" style={{ width: 28, height: 28, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+                          : <Av ini={(r.owner_name || '?').slice(0, 2).toUpperCase()} bg={C.purpleBg} tc={C.purple} size={28} />}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.owner_name}</div>
+                          <div style={{ fontSize: 11.5, fontWeight: 700, color: C.green }}>✓ {r.owner_trades} {r.owner_trades === 1 ? 'trade' : 'trades'}</div>
+                        </div>
+                        {r.my_offer_id
+                          ? <button onClick={() => withdraw(r)} disabled={withdrawing === r.listing_id}
+                              style={{ flexShrink: 0, padding: '8px 14px', borderRadius: 99, border: `1.5px solid ${C.amberBd}`, background: C.amberBg, color: C.amber, fontSize: 11.5, fontWeight: 800, letterSpacing: '.3px', cursor: 'pointer', opacity: withdrawing === r.listing_id ? 0.6 : 1 }}>
+                              {withdrawing === r.listing_id ? '…' : 'SENT · WITHDRAW'}
+                            </button>
+                          : <button onClick={() => onOffer?.(r)}
+                              style={{ flexShrink: 0, padding: '9px 20px', borderRadius: 99, border: 'none', background: C.dark, color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Offer</button>}
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </>
+        ) : chats === null ? (
+          <div style={{ textAlign: 'center', padding: '4rem 1.5rem', color: C.muted, fontSize: 13 }}>Loading…</div>
+        ) : (
+          <div style={{ padding: '10px 16px 24px' }}>
+            {chats.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '2.5rem 1.5rem 1.5rem' }}>
+                <div style={{ fontSize: 40, marginBottom: 12 }}>🤝</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>No trades yet</div>
+                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>Make an offer on something in Browse. Once it's accepted, the chat opens here.</div>
+              </div>
+            )}
+            {chats.map(c => (
+              <div key={c.chat_id} onClick={() => onOpenChat?.(c)}
+                style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '12px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer', opacity: c.status === 'active' ? 1 : 0.6 }}>
+                {c.other_avatar
+                  ? <img src={c.other_avatar} alt="" style={{ width: 42, height: 42, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+                  : <Av ini={(c.other_name || '?').slice(0, 2).toUpperCase()} bg={C.purpleBg} tc={C.purple} size={42} />}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.other_name || 'A departed collector'}</div>
+                  <div style={{ fontSize: 12, color: C.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {c.listing_emoji} {c.listing_venue} ⇄ {(c.offered_names || []).join(' + ')}
+                  </div>
+                </div>
+                {c.status === 'active'
+                  ? (c.completed_by && c.completed_by !== user?.id
+                      ? <Tag label="Confirm ✓" bg={C.greenBg} color={C.green} />
+                      : <i className="ti ti-chevron-right" style={{ fontSize: 16, color: C.muted, flexShrink: 0 }} />)
+                  : <Tag label={c.status === 'completed' ? 'Done ✓' : 'Cancelled'} bg={c.status === 'completed' ? C.greenBg : C.surface} color={c.status === 'completed' ? C.green : C.muted} />}
+              </div>
+            ))}
+
+            {/* Outgoing offers — where "declined" finally gets said out loud */}
+            {(myOffers || []).length > 0 && (
+              <>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.5px', padding: '18px 0 6px' }}>OFFERS YOU'VE MADE</div>
+                {(myOffers || []).map(o => (
+                  <div key={o.offer_id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderBottom: `0.5px solid ${C.border}` }}>
+                    <span style={{ fontSize: 18, flexShrink: 0 }}>{o.venue_emoji}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{o.venue_name}</div>
+                      <div style={{ fontSize: 11.5, color: C.muted }}>to {o.owner_name} · {agoLabel(o.created_at)}</div>
+                    </div>
+                    <Tag
+                      label={o.status === 'pending' ? 'Pending' : o.status === 'accepted' ? 'Accepted ✓' : o.status === 'withdrawn' ? 'Withdrawn' : 'Declined'}
+                      bg={o.status === 'accepted' ? C.greenBg : o.status === 'pending' ? C.amberBg : C.surface}
+                      color={o.status === 'accepted' ? C.green : o.status === 'pending' ? C.amber : C.muted}
+                    />
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Offer a bundle of your own matchbooks for one of theirs (spec §4.4).
+function MakeOffer({ listing, collection, myListings, onSend, onBack }) {
+  const [picked, setPicked] = useState([])
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [sent, setSent] = useState(false)
+
+  // Anything already committed to another trade can't be offered again — the
+  // server rejects it too, but a greyed row explains why before you tap.
+  const lockedIds = useMemo(
+    () => new Set((myListings || []).filter(l => l.status === 'in_trade').map(l => l.venue_id)),
+    [myListings]
+  )
+  const photoOf = (l) => (myListings || []).find(x => x.venue_id === l.venue_id)?.photo_url
+  const mine = useMemo(
+    () => (collection || []).filter(i => i.venue && !isKeepsake(i.venue)).sort((a, b) => a.venue.name.localeCompare(b.venue.name)),
+    [collection]
+  )
+  const names = mine.filter(i => picked.includes(i.venue_id)).map(i => i.venue.name)
+
+  const send = async () => {
+    setBusy(true); setErr('')
+    const res = await onSend?.(listing.listing_id, picked, note)
+    setBusy(false)
+    if (res?.error) { setErr(res.error); return }
+    setSent(true)
+  }
+
+  if (sent) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+        <SBar title="Trades" />
+        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 20px', textAlign: 'center' }}>
+          <div style={{ fontSize: 64, margin: '30px 0 16px' }}>📮</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: C.text, letterSpacing: '-.4px', marginBottom: 8 }}>Offer sent.</div>
+          <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, marginBottom: 24 }}>
+            <span style={{ fontWeight: 700, color: C.text }}>{listing.owner_name}</span> sees your offer alongside any others. If they pick yours, a private chat opens here.
+          </div>
+          <PrimaryBtn onClick={onBack}>Back to trades</PrimaryBtn>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      <SBar title="Trades" />
+      <div style={{ padding: '10px 16px 0' }}>
+        <button onClick={onBack} style={{ background: 'none', border: 'none', fontSize: 13, color: C.amber, cursor: 'pointer', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4, padding: '4px 0 8px' }}>
+          <i className="ti ti-arrow-left" style={{ fontSize: 13 }} /> Browse
+        </button>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 24px' }}>
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.5px', marginBottom: 12 }}>Offer a trade to {listing.owner_name}</div>
+
+        <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: 18, border: `0.5px solid ${C.border}` }}>
+          <div style={{ height: 110, background: listing.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {listing.photo_url
+              ? <img src={listing.photo_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              : <span style={{ fontSize: 40 }}>{listing.emoji}</span>}
+          </div>
+          <div style={{ background: C.surface, padding: '10px 13px' }}>
+            <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, letterSpacing: '.5px' }}>THEY'RE LISTING</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{listing.venue_name} · {listing.city}</div>
+          </div>
+        </div>
+
+        <div style={{ fontSize: 10.5, fontWeight: 800, color: C.muted, letterSpacing: '.5px', marginBottom: 8 }}>WHAT YOU'RE OFFERING — PICK ONE OR MORE</div>
+        {mine.length === 0 && (
+          <div style={{ background: C.surface, borderRadius: 12, padding: '14px', fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 14 }}>
+            You need a matchbook in your collection before you can offer a trade.
+          </div>
+        )}
+        {mine.map(i => {
+          const on = picked.includes(i.venue_id)
+          const locked = lockedIds.has(i.venue_id)
+          const ph = photoOf(i)
+          return (
+            <button key={i.venue_id} disabled={locked}
+              onClick={() => setPicked(p => (on ? p.filter(x => x !== i.venue_id) : [...p, i.venue_id]))}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '11px 13px', marginBottom: 9, textAlign: 'left', borderRadius: 14, cursor: locked ? 'default' : 'pointer', border: `1.5px solid ${on ? C.amberBd : C.border}`, background: on ? C.amberBg : C.card, opacity: locked ? 0.5 : 1 }}>
+              {ph
+                ? <img src={ph} alt="" style={{ width: 44, height: 44, borderRadius: 10, objectFit: 'cover', flexShrink: 0 }} />
+                : <div style={{ width: 44, height: 44, borderRadius: 10, background: i.venue.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0 }}>{i.venue.emoji}</div>}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.venue.name}</div>
+                <div style={{ fontSize: 11.5, color: C.muted }}>
+                  {[i.venue.neighborhood || i.venue.city, locked ? 'in an active trade' : (ph ? '📷 photo added' : 'no photo')].filter(Boolean).join(' · ')}
+                </div>
+              </div>
+              <div style={{ width: 24, height: 24, borderRadius: '50%', flexShrink: 0, border: `1.5px solid ${on ? C.amber : C.borderStr}`, background: on ? C.amber : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {on && <i className="ti ti-check" style={{ fontSize: 13, color: '#fff' }} />}
+              </div>
+            </button>
+          )
+        })}
+
+        <div style={{ background: picked.length ? C.amberBg : C.redBg, border: `1px solid ${picked.length ? C.amberBd : C.red + '44'}`, borderRadius: 12, padding: '11px 13px', margin: '4px 0 16px', fontSize: 13, fontWeight: 700, color: picked.length ? C.amber : C.red, lineHeight: 1.4 }}>
+          {picked.length
+            ? `Offering ${picked.length} ${picked.length === 1 ? 'matchbook' : 'matchbooks'}: ${names.join(' + ')}`
+            : 'Pick at least one matchbook to offer'}
+        </div>
+
+        <div style={{ fontSize: 10.5, fontWeight: 800, color: C.muted, letterSpacing: '.5px', marginBottom: 7 }}>NOTE (OPTIONAL)</div>
+        <textarea value={note} onChange={e => setNote(e.target.value)} rows={3} placeholder="e.g. both pristine — happy to sort logistics in chat"
+          style={{ width: '100%', padding: 12, border: `1.5px solid ${C.border}`, borderRadius: 12, background: C.card, color: C.text, fontSize: 14, outline: 'none', resize: 'none', marginBottom: 14, fontFamily: 'inherit', lineHeight: 1.4 }} />
+
+        <div style={{ background: C.greenBg, borderRadius: 12, padding: '11px 13px', fontSize: 12.5, color: C.sec, lineHeight: 1.5, marginBottom: 14 }}>
+          <i className="ti ti-lock" style={{ fontSize: 12, marginRight: 6, color: C.green }} />
+          If accepted, a private chat opens. phillumeni never touches what you share there.
+        </div>
+
+        {err && <div style={{ fontSize: 12, color: C.red, marginBottom: 10, lineHeight: 1.4 }}>{err}</div>}
+        <PrimaryBtn onClick={send} disabled={!picked.length || busy}>{busy ? 'Sending…' : 'Send offer'}</PrimaryBtn>
+      </div>
+    </div>
+  )
+}
+
+// Every pending offer on one of your listings, oldest first. Accepting one
+// auto-declines the rest — that happens in the RPC, as one transaction.
+function BidInbox({ listing, onAccept, onDecline, onBack }) {
+  const [offers, setOffers] = useState(null)
+  const [busy, setBusy] = useState(null)
+  const [err, setErr] = useState('')
+
+  const load = useCallback(() => {
+    supabase.rpc('listing_offers', { p_listing_id: listing.id }).then(({ data, error }) => {
+      setOffers(error ? [] : (data || []))
+    })
+  }, [listing.id])
+  useEffect(() => { load() }, [load])
+
+  const act = async (o, accept) => {
+    setBusy(o.offer_id); setErr('')
+    const res = accept ? await onAccept?.(o) : await onDecline?.(o)
+    setBusy(null)
+    if (res?.error) { setErr(res.error); load(); return }
+    if (!accept) load() // accept navigates into the chat; decline just refreshes
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      <SBar title="Trades" />
+      <div style={{ padding: '10px 16px 0' }}>
+        <button onClick={onBack} style={{ background: 'none', border: 'none', fontSize: 13, color: C.amber, cursor: 'pointer', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4, padding: '4px 0 10px' }}>
+          <i className="ti ti-arrow-left" style={{ fontSize: 13 }} /> Collection
+        </button>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 24px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          {listing.photo_url
+            ? <img src={listing.photo_url} alt="" style={{ width: 62, height: 62, borderRadius: 12, objectFit: 'cover', flexShrink: 0 }} />
+            : <div style={{ width: 62, height: 62, borderRadius: 12, background: listing.venue?.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, flexShrink: 0 }}>{listing.venue?.emoji}</div>}
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-.4px' }}>{listing.venue?.name}</div>
+            <div style={{ fontSize: 12.5, color: C.muted }}>
+              {listing.venue?.neighborhood || listing.venue?.city} · {(offers || []).length} {(offers || []).length === 1 ? 'offer' : 'offers'}
+            </div>
+          </div>
+        </div>
+
+        {err && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, lineHeight: 1.4 }}>{err}</div>}
+
+        {offers === null ? (
+          <div style={{ textAlign: 'center', padding: '3rem 1rem', color: C.muted, fontSize: 13 }}>Loading…</div>
+        ) : offers.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '3rem 1.5rem' }}>
+            <div style={{ fontSize: 36, marginBottom: 10 }}>📭</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 6 }}>No offers yet</div>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>It's listed and visible to everyone. Offers land here.</div>
+          </div>
+        ) : offers.map(o => {
+          const names = o.offered_names || []
+          const emojis = o.offered_emojis || []
+          const photos = o.offered_photos || [] // aligned with names; '' = no trade photo
+          return (
+            <Card key={o.offer_id} style={{ padding: 13, marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 10 }}>
+                {o.offerer_avatar
+                  ? <img src={o.offerer_avatar} alt="" style={{ width: 34, height: 34, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+                  : <Av ini={(o.offerer_name || '?').slice(0, 2).toUpperCase()} bg={C.purpleBg} tc={C.purple} size={34} />}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14.5, fontWeight: 700, color: C.text }}>{o.offerer_name}</div>
+                  <div style={{ fontSize: 11.5, fontWeight: 700, color: C.green }}>✓ {o.offerer_trades} {o.offerer_trades === 1 ? 'trade' : 'trades'}</div>
+                </div>
+                <div style={{ fontSize: 11.5, color: C.muted, flexShrink: 0 }}>{agoLabel(o.created_at)}</div>
+              </div>
+
+              {/* 1 or 2 get their own cards; 3+ collapse to a stack + a list,
+                  per the spec's bundle display rules */}
+              <div style={{ background: C.surface, borderRadius: 11, padding: '10px 12px', marginBottom: 9 }}>
+                {names.length <= 2 ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    {names.map((n, i) => (
+                      <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {i > 0 && <span style={{ color: C.amber, fontWeight: 800, marginRight: 2 }}>+</span>}
+                        {photos[i]
+                          ? <img src={photos[i]} alt="" loading="lazy" style={{ width: 34, height: 34, borderRadius: 8, objectFit: 'cover' }} />
+                          : <span style={{ fontSize: 17 }}>{emojis[i]}</span>}
+                        <span style={{ fontSize: 13.5, fontWeight: 700, color: C.text }}>{n}</span>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                    <div style={{ display: 'flex', flexShrink: 0 }}>
+                      {emojis.slice(0, 3).map((e, i) => (
+                        <span key={i} style={{ fontSize: 16, marginLeft: i ? -6 : 0, background: C.card, borderRadius: '50%', width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `1px solid ${C.border}` }}>{e}</span>
+                      ))}
+                    </div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: C.text, lineHeight: 1.4 }}>{names.join(' + ')}</div>
+                  </div>
+                )}
+              </div>
+
+              {o.note && (
+                <div style={{ background: C.surface, borderRadius: 11, padding: '9px 12px', marginBottom: 10, fontSize: 12.5, color: C.sec, fontStyle: 'italic', lineHeight: 1.5 }}>“{o.note}”</div>
+              )}
+
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => act(o, true)} disabled={busy === o.offer_id}
+                  style={{ flex: 2, padding: '12px', borderRadius: 12, border: 'none', background: C.dark, color: '#fff', fontSize: 13.5, fontWeight: 700, cursor: 'pointer', opacity: busy === o.offer_id ? 0.6 : 1 }}>
+                  Accept → chat
+                </button>
+                <button onClick={() => act(o, false)} disabled={busy === o.offer_id}
+                  style={{ flex: 1, padding: '12px', borderRadius: 12, border: `1.5px solid ${C.border}`, background: 'transparent', color: C.muted, fontSize: 13.5, fontWeight: 700, cursor: 'pointer', opacity: busy === o.offer_id ? 0.6 : 1 }}>
+                  Decline
+                </button>
+              </div>
+            </Card>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// The private half of a trade. phillumeni doesn't moderate what's said here —
+// which is exactly why block (022) had to exist before this shipped.
+function TradeChat({ chat, user, onComplete, onCancel, onBlock, onBack }) {
+  const [msgs, setMsgs] = useState(null)
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [menu, setMenu] = useState(false)
+  const [cancelSheet, setCancelSheet] = useState(false)
+  const [recap, setRecap] = useState(false)        // shown to whoever's tap completes it
+  const [reportSheet, setReportSheet] = useState(false)
+  const [reportText, setReportText] = useState('')
+  const [reportDone, setReportDone] = useState(false)
+  const [status, setStatus] = useState(chat.status)
+  const [completedBy, setCompletedBy] = useState(chat.completed_by)
+  const [mutualBy, setMutualBy] = useState(chat.mutual_requested_by || null)
+  const endRef = useRef(null)
+
+  const load = useCallback(async () => {
+    const { data, error } = await supabase.from('trade_messages').select('*').eq('chat_id', chat.chat_id).order('created_at')
+    if (!error) setMsgs(data || [])
+    const { data: c } = await supabase.from('trade_chats').select('status, completed_by, mutual_requested_by').eq('id', chat.chat_id).maybeSingle()
+    if (c) { setStatus(c.status); setCompletedBy(c.completed_by); setMutualBy(c.mutual_requested_by) }
+  }, [chat.chat_id])
+  useEffect(() => { load() }, [load])
+  useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }) }, [msgs])
+
+  const send = async () => {
+    const body = text.trim()
+    if (!body) return
+    setText(''); setErr('')
+    const { error } = await supabase.from('trade_messages').insert({ chat_id: chat.chat_id, sender_id: user.id, content: body })
+    if (error) {
+      // The usual cause isn't the network — it's the other party having closed
+      // the trade. Re-sync so the archived banner appears instead of a
+      // permanently "active" chat where every send fails generically.
+      setErr('Couldn’t send that.'); setText(body); load(); return
+    }
+    load()
+  }
+  const complete = async () => {
+    setBusy(true); setErr('')
+    const res = await onComplete?.(chat.chat_id)
+    setBusy(false)
+    if (res?.error) { setErr(res.error); return }
+    if (res?.data === 'completed') setRecap(true) // spec §4.7: recap on completion
+    load()
+  }
+
+  const sendReport = async () => {
+    setBusy(true); setErr('')
+    const { error } = await supabase.from('chat_reports').insert({
+      reporter_id: user.id, reported_id: chat.other_id, reported_name: chat.other_name,
+      chat_id: chat.chat_id, detail: reportText.trim() || null,
+    })
+    setBusy(false)
+    if (error) { setErr('Couldn’t send that report — try again.'); return }
+    setReportDone(true)
+  }
+  const doCancel = async (reason) => {
+    setBusy(true); setErr('')
+    const res = await onCancel?.(chat.chat_id, reason)
+    setBusy(false); setCancelSheet(false)
+    if (res?.error) { setErr(res.error); return }
+    load()
+  }
+
+  const closed = status !== 'active'
+  const iConfirmed = completedBy === user?.id
+  const theyConfirmed = completedBy && completedBy !== user?.id
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative', background: C.bg }}>
+      <div style={{ background: C.dark, padding: '10px 16px 12px', flexShrink: 0 }}>
+        <button onClick={onBack} style={{ background: 'none', border: 'none', fontSize: 12.5, color: 'rgba(255,255,255,0.5)', cursor: 'pointer', fontWeight: 700, padding: '2px 0 8px' }}>‹ Trades</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+          {chat.other_avatar
+            ? <img src={chat.other_avatar} alt="" style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+            : <Av ini={(chat.other_name || '?').slice(0, 2).toUpperCase()} bg={C.purpleBg} tc={C.purple} size={40} />}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 16, fontWeight: 800, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{chat.other_name}</div>
+            <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,0.45)' }}>✓ {chat.other_trades} {chat.other_trades === 1 ? 'trade' : 'trades'}</div>
+          </div>
+          <button onClick={() => setMenu(true)} style={{ flexShrink: 0, width: 34, height: 34, borderRadius: '50%', background: 'rgba(255,255,255,0.12)', border: 'none', color: '#fff', fontSize: 16, cursor: 'pointer', letterSpacing: '.5px' }}>···</button>
+        </div>
+      </div>
+
+      {/* What's actually being swapped, pinned so neither side forgets the deal */}
+      <div style={{ background: '#111', padding: '9px 16px', flexShrink: 0 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: '#fff' }}>
+          {chat.listing_emoji} {chat.listing_venue} ⇄ {(chat.offered_names || []).join(' + ')}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px' }}>
+        <div style={{ textAlign: 'center', fontSize: 12, color: C.muted, marginBottom: 14 }}>Trade accepted · Chat unlocked</div>
+        {(msgs || []).map(m => (
+          m.kind === 'system' ? (
+            <div key={m.id} style={{ textAlign: 'center', fontSize: 12, color: C.muted, margin: '12px 0', fontStyle: 'italic' }}>{m.content}</div>
+          ) : (
+            <div key={m.id} style={{ display: 'flex', justifyContent: m.sender_id === user?.id ? 'flex-end' : 'flex-start', marginBottom: 9 }}>
+              <div style={{ maxWidth: '78%', padding: '9px 13px', borderRadius: 16, fontSize: 14, lineHeight: 1.4, background: m.sender_id === user?.id ? C.dark : C.surface, color: m.sender_id === user?.id ? '#fff' : C.text }}>
+                {m.content}
+              </div>
+            </div>
+          )
+        ))}
+        <div ref={endRef} />
+      </div>
+
+      {err && <div style={{ fontSize: 12, color: C.red, padding: '0 16px 6px', lineHeight: 1.4 }}>{err}</div>}
+
+      {closed ? (
+        <div style={{ padding: '14px 16px', textAlign: 'center', fontSize: 13, color: C.muted, background: C.surface, flexShrink: 0 }}>
+          {status === 'completed' ? 'Trade complete — this chat is archived.' : 'Trade cancelled — this chat is archived.'}
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', gap: 8, padding: '10px 16px', flexShrink: 0, borderTop: `0.5px solid ${C.border}` }}>
+            <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Message…"
+              style={{ flex: 1, padding: '11px 14px', border: `1.5px solid ${C.border}`, borderRadius: 99, background: C.card, color: C.text, fontSize: 14, outline: 'none' }} />
+            <button onClick={send} disabled={!text.trim()} style={{ flexShrink: 0, width: 42, height: 42, borderRadius: '50%', border: 'none', background: text.trim() ? C.dark : C.border, color: '#fff', cursor: 'pointer' }}>
+              <i className="ti ti-arrow-up" style={{ fontSize: 17 }} />
+            </button>
+          </div>
+          <button onClick={complete} disabled={busy || iConfirmed}
+            style={{ width: '100%', padding: 16, border: 'none', background: iConfirmed ? C.surface : C.green, color: iConfirmed ? C.muted : '#fff', fontSize: 15, fontWeight: 700, cursor: iConfirmed ? 'default' : 'pointer', flexShrink: 0 }}>
+            {iConfirmed ? `Waiting for ${chat.other_name} to confirm…` : theyConfirmed ? `${chat.other_name} marked it done — confirm ✓` : 'Mark trade complete ✓'}
+          </button>
+        </>
+      )}
+
+      {menu && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 40, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={() => setMenu(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+          <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px' }}>
+            <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
+            {!closed && (
+              <button onClick={() => { setMenu(false); setCancelSheet(true) }} style={{ width: '100%', padding: 14, marginBottom: 8, border: `1.5px solid ${C.border}`, borderRadius: 14, background: C.card, color: C.text, fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>Cancel this trade</button>
+            )}
+            <button onClick={() => { setMenu(false); setReportText(''); setReportDone(false); setReportSheet(true) }}
+              style={{ width: '100%', padding: 14, marginBottom: 8, border: `1.5px solid ${C.border}`, borderRadius: 14, background: C.card, color: C.text, fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>Report this conversation</button>
+            <button onClick={async () => { setMenu(false); const ok = await onBlock?.(chat.other_id); if (ok !== false) onBack?.() }}
+              style={{ width: '100%', padding: 14, marginBottom: 8, border: `1.5px solid ${C.red}44`, borderRadius: 14, background: C.redBg, color: C.red, fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>Block {chat.other_name}</button>
+            <button onClick={() => setMenu(false)} style={{ width: '100%', padding: 13, background: 'none', border: 'none', color: C.muted, fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {cancelSheet && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 40, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={() => !busy && setCancelSheet(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+          <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px', maxHeight: '88%', overflowY: 'auto' }}>
+            <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
+            <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 6 }}>Cancel this trade?</div>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 18 }}>Pick the reason — it's logged on the relevant profile so the community knows.</div>
+            {[
+              // Mutual takes BOTH parties now (024) — a unilateral "mutual" was
+              // just backing out with the blame filed off.
+              mutualBy && mutualBy !== user?.id
+                ? { k: 'mutual', t: `Agree — cancel with no blame`, s: `${chat.other_name} proposed a mutual cancel. Agreeing closes the trade with no record against either of you.` }
+                : mutualBy === user?.id
+                ? { k: 'mutual', t: 'Mutual cancel proposed', s: `Waiting for ${chat.other_name} to agree. No record either way until they do.` }
+                : { k: 'mutual', t: 'Propose a mutual cancel', s: `Closes with no record — once ${chat.other_name} agrees.` },
+              { k: 'they_ghosted', t: 'They didn’t follow through', s: `Agreed then went quiet. Logged on ${chat.other_name}'s profile.` },
+              { k: 'i_backed_out', t: 'I’m backing out', s: 'You’re cancelling. Logged on your own profile.' },
+            ].map(o => (
+              <button key={o.k} onClick={() => doCancel(o.k)} disabled={busy}
+                style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 13, padding: '13px', marginBottom: 9, textAlign: 'left', border: `1.5px solid ${C.border}`, borderRadius: 14, background: C.card, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1 }}>
+                <div style={{ width: 40, height: 40, borderRadius: 11, background: C.surface, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17, flexShrink: 0 }}>{CANCEL_META[o.k].icon}</div>
+                <div>
+                  <div style={{ fontSize: 14.5, fontWeight: 700, color: C.text }}>{o.t}</div>
+                  <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.4 }}>{o.s}</div>
+                </div>
+              </button>
+            ))}
+            <button onClick={() => setCancelSheet(false)} disabled={busy} style={{ width: '100%', padding: 13, background: 'none', border: 'none', color: C.muted, fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Keep this trade open</button>
+          </div>
+        </div>
+      )}
+
+      {/* Recap (spec §4.7) — both matchbooks, both names, the date. */}
+      {recap && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 50, background: C.bg, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '24px', textAlign: 'center' }}>
+          <div style={{ fontSize: 60, marginBottom: 14 }}>🤝</div>
+          <div style={{ fontSize: 24, fontWeight: 800, color: C.text, letterSpacing: '-.5px', marginBottom: 8 }}>Trade complete.</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 4 }}>
+            {chat.listing_emoji} {chat.listing_venue} ⇄ {(chat.offered_names || []).join(' + ')}
+          </div>
+          <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 6 }}>
+            You and {chat.other_name || 'a fellow collector'} · {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+          </div>
+          <div style={{ fontSize: 12.5, color: C.muted, lineHeight: 1.6, marginBottom: 22 }}>
+            It's on both your trade records. The matchbooks are in your hands now — add yours to your collection whenever.
+          </div>
+          <PrimaryBtn onClick={() => setRecap(false)} style={{ maxWidth: 300 }}>Done</PrimaryBtn>
+        </div>
+      )}
+
+      {/* Report → chat_reports → the admin queue. Its own table on purpose:
+          fake_reports' Accept action deletes the VENUE. */}
+      {reportSheet && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 40, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={() => !busy && setReportSheet(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+          <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px' }}>
+            <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
+            {reportDone ? (
+              <>
+                <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 6 }}>Report sent.</div>
+                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 18 }}>A person reviews every report. If you don't want to hear from {chat.other_name} at all, blocking them also ends this trade.</div>
+                <PrimaryBtn onClick={() => setReportSheet(false)}>Done</PrimaryBtn>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 6 }}>Report this conversation?</div>
+                <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 14 }}>Goes to a human, with the chat attached. {chat.other_name} isn't told.</div>
+                <textarea value={reportText} onChange={e => setReportText(e.target.value)} rows={3} placeholder="What happened? (optional)"
+                  style={{ width: '100%', padding: 12, border: `1.5px solid ${C.border}`, borderRadius: 12, background: C.card, color: C.text, fontSize: 14, outline: 'none', resize: 'none', marginBottom: 12, fontFamily: 'inherit', lineHeight: 1.4 }} />
+                {err && <div style={{ fontSize: 12, color: C.red, marginBottom: 10, lineHeight: 1.4 }}>{err}</div>}
+                <PrimaryBtn onClick={sendReport} disabled={busy}>{busy ? 'Sending…' : 'Send report'}</PrimaryBtn>
+                <button onClick={() => setReportSheet(false)} disabled={busy} style={{ width: '100%', padding: 12, marginTop: 6, background: 'none', border: 'none', color: C.muted, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Never mind</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TabBar({ active, onNav, tradeBadge = 0 }) {
   const tabs = [
     { id: 'explore', icon: 'ti-map', l: 'Explore' },
     { id: 'rankings', icon: 'ti-trophy', l: 'Rankings' },
     { id: 'collection', icon: 'ti-stack-2', l: 'Collection' },
+    { id: 'trades', icon: 'ti-arrows-exchange', l: 'Trades', badge: tradeBadge },
     { id: 'profile', icon: 'ti-user', l: 'Profile' },
   ]
   return (
     <div style={{ borderTop: `0.5px solid ${C.border}`, display: 'flex', padding: '9px 0 max(14px, env(safe-area-inset-bottom))', flexShrink: 0, background: C.card }}>
       {tabs.map(t => (
         <div key={t.id} onClick={() => onNav(t.id)} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, cursor: 'pointer' }}>
-          <div style={{ width: 30, height: 28, borderRadius: 8, background: active === t.id ? C.amberBg : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background .15s' }}>
+          <div style={{ width: 30, height: 28, borderRadius: 8, background: active === t.id ? C.amberBg : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background .15s', position: 'relative' }}>
             <i className={`ti ${t.icon}`} style={{ fontSize: 20, color: active === t.id ? C.amber : C.muted, transition: 'color .15s' }} />
+            {/* Offers/chats waiting on you. Push isn't built, so the badge IS the
+                notification — it's the only way an offer finds you. */}
+            {t.badge > 0 && (
+              <span style={{ position: 'absolute', top: -2, right: -4, minWidth: 16, height: 16, padding: '0 4px', borderRadius: 8, background: C.red, color: '#fff', fontSize: 9.5, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `1.5px solid ${C.card}` }}>
+                {t.badge > 9 ? '9+' : t.badge}
+              </span>
+            )}
           </div>
           <span style={{ fontSize: 10, fontWeight: active === t.id ? 700 : 500, color: active === t.id ? C.amber : C.muted, letterSpacing: active === t.id ? '-.1px' : 0 }}>{t.l}</span>
         </div>
@@ -3272,6 +4219,13 @@ export default function App() {
   const [reRankTarget, setReRankTarget] = useState(null) // { venue, photo, score } — re-ranking a spot via head-to-heads
   const [following, setFollowing] = useState([]) // [{ id, display_name, avatar_url, matchbooks }]
   const [blocked, setBlocked] = useState([])     // [{ id, display_name, avatar_url }] — 022
+  // Trades (023)
+  const [myListings, setMyListings] = useState([])   // my trade_listings rows
+  const [offerCounts, setOfferCounts] = useState({}) // listing_id → pending offers
+  const [tradeBadge, setTradeBadge] = useState(0)    // offers + chats needing me
+  const [offerTarget, setOfferTarget] = useState(null) // browse row → Make offer
+  const [offersFor, setOffersFor] = useState(null)     // my listing → bid inbox
+  const [openChat, setOpenChat] = useState(null)       // my_trades row → chat
   const [sheetOpen, setSheetOpen] = useState(false) // a bottom sheet is open → hide TabBar
 
   // Auth state
@@ -3428,6 +4382,21 @@ export default function App() {
 
   useEffect(() => { if (isAdmin) loadClosureReports() }, [isAdmin, loadClosureReports])
 
+  // Trade-chat reports (024) — human review for conversations, admin-read RLS.
+  const [chatReports, setChatReports] = useState([])
+  const loadChatReports = useCallback(() => {
+    if (!user) return
+    supabase.from('chat_reports').select('*').eq('status', 'pending').order('created_at')
+      .then(({ data, error }) => setChatReports(error ? [] : (data || []))) // pre-024: table absent → empty
+  }, [user])
+  useEffect(() => { if (isAdmin) loadChatReports() }, [isAdmin, loadChatReports])
+  const handleResolveChatReport = async (id) => {
+    const { error } = await supabase.from('chat_reports').update({ status: 'resolved' }).eq('id', id)
+    if (error) { console.error('Resolve chat report failed', error); return false }
+    setChatReports(prev => prev.filter(r => r.id !== id))
+    return true
+  }
+
   // Admin override: clear a venue's live reports, optionally putting it back on
   // the map (venues has no UPDATE policy at all, so this must go through the RPC).
   const handleResolveReports = async (venueId, reopen) => {
@@ -3480,6 +4449,101 @@ export default function App() {
     if (error) { console.error('Unblock failed', error); return false }
     setBlocked(prev => prev.filter(b => b.id !== userId))
     return true
+  }
+
+  // ─── Trades (023) ──────────────────────────────────────
+  const refreshTrades = useCallback(async () => {
+    if (!user) { setMyListings([]); setOfferCounts({}); setTradeBadge(0); return }
+    const [{ data: listings }, { data: counts }, { data: chats }, { data: outgoing }] = await Promise.all([
+      supabase.from('trade_listings').select('*').eq('user_id', user.id).neq('status', 'removed'),
+      supabase.rpc('my_listing_offer_counts'),
+      supabase.rpc('my_trades'),
+      supabase.rpc('my_offers'),
+    ])
+    setMyListings(listings || [])                       // pre-023: tables absent → null → []
+    setOfferCounts(Object.fromEntries((counts || []).map(c => [c.listing_id, c.pending])))
+    // The badge IS the notification — push isn't built, so an offer, a fresh
+    // accept, a decline, or a waiting confirmation has no other way to find you.
+    const pending = (counts || []).reduce((n, c) => n + c.pending, 0)
+    const waiting = (chats || []).filter(c => c.status === 'active' && c.completed_by && c.completed_by !== user.id).length
+    const freshAccepts = (chats || []).filter(c => c.status === 'active' && !c.is_mine && c.my_msgs === 0).length
+    const unseenDeclines = (outgoing || []).filter(o => o.status === 'declined' && !o.seen).length
+    setTradeBadge(pending + waiting + freshAccepts + unseenDeclines)
+  }, [user])
+  useEffect(() => { refreshTrades() }, [refreshTrades])
+  // Keep it honest during a session: re-check on a slow tick and whenever the
+  // app regains focus (same signal the SW-update check uses).
+  useEffect(() => {
+    const t = setInterval(refreshTrades, 60000)
+    const onVis = () => document.visibilityState === 'visible' && refreshTrades()
+    document.addEventListener('visibilitychange', onVis)
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVis) }
+  }, [refreshTrades])
+
+  // List / unlist a matchbook. Both go through RPCs (024): a raw upsert could
+  // flip an in_trade listing back to active — two live trades, one matchbook.
+  const handleToggleTrade = async (item, list) => {
+    if (!user) return false
+    if (list) {
+      const { error } = await supabase.rpc('list_for_trade', { p_venue_id: item.venue_id })
+      if (error) { console.error('List failed', error); return false }
+    } else {
+      const existing = myListings.find(l => l.venue_id === item.venue_id)
+      if (!existing) return true
+      const { error } = await supabase.rpc('remove_listing', { p_listing_id: existing.id })
+      if (error) { console.error('Unlist failed', error); return false }
+    }
+    refreshTrades()
+    return true
+  }
+
+  const handleListingPhoto = async (listing, file) => {
+    if (!user || !listing) return false
+    try {
+      const blob = await downscaleImage(file, 1600, 0.8)
+      const path = `${user.id}/${crypto.randomUUID()}.jpg`
+      const { error: upErr } = await supabase.storage.from('matchbooks').upload(path, blob, { contentType: 'image/jpeg', upsert: false })
+      if (upErr) throw upErr
+      const url = supabase.storage.from('matchbooks').getPublicUrl(path).data.publicUrl
+      const { error } = await supabase.from('trade_listings').update({ photo_url: url }).eq('id', listing.id)
+      if (error) throw error
+      refreshTrades()
+      return true
+    } catch (e) { console.error('Listing photo failed', e); return false }
+  }
+
+  // Every rule in the spec is enforced server-side; surface whatever it says.
+  const rpcOr = async (fn, args) => {
+    const { data, error } = await supabase.rpc(fn, args)
+    if (error) { console.error(fn, error); return { error: error.message || 'Something went wrong. Try again.' } }
+    return { data }
+  }
+  const handleMakeOffer = (listingId, venueIds, note) =>
+    rpcOr('make_offer', { p_listing_id: listingId, p_venue_ids: venueIds, p_note: note || null })
+  const handleAcceptOffer = async (o) => {
+    const res = await rpcOr('accept_offer', { p_offer_id: o.offer_id })
+    if (res.error) return res
+    await refreshTrades()
+    const { data } = await supabase.rpc('my_trades')
+    const chat = (data || []).find(c => c.chat_id === res.data)
+    setOffersFor(null)
+    if (chat) { setOpenChat(chat); setTab('trades') }
+    return res
+  }
+  const handleDeclineOffer = async (o) => {
+    const res = await rpcOr('decline_offer', { p_offer_id: o.offer_id })
+    if (!res.error) refreshTrades()
+    return res
+  }
+  const handleCompleteTrade = async (chatId) => {
+    const res = await rpcOr('complete_trade', { p_chat_id: chatId })
+    if (!res.error) refreshTrades()
+    return res
+  }
+  const handleCancelTrade = async (chatId, reason) => {
+    const res = await rpcOr('cancel_trade', { p_chat_id: chatId, p_reason: reason })
+    if (!res.error) refreshTrades()
+    return res
   }
 
   // Your own block list, with names — profiles are owner-only, so this needs the RPC.
@@ -3725,6 +4789,7 @@ export default function App() {
 
   // Tapping a bottom tab from anywhere (Submit, Admin, Invite, Find, Re-rank)
   // exits that flow and lands on the tab — so you're never stuck in a screen.
+  // Tapping a tab exits whatever flow you're in — you're never stuck in a screen.
   const handleNav = (t) => {
     setShowSubmit(false)
     setShowAdmin(false)
@@ -3732,7 +4797,11 @@ export default function App() {
     setShowFind(false)
     setViewingCollector(null)
     setReRankTarget(null)
+    setOfferTarget(null)
+    setOffersFor(null)
+    setOpenChat(null)
     setSheetOpen(false)
+    if (t === 'trades') refreshTrades() // the badge must match what the tab shows
     setTab(t)
   }
 
@@ -3808,10 +4877,36 @@ export default function App() {
           reports={fakeReports}
           venues={venues}
           closureReports={closureReports}
+          chatReports={chatReports}
           onAccept={handleAcceptReport}
           onReject={handleRejectReport}
           onResolveReports={handleResolveReports}
+          onResolveChatReport={handleResolveChatReport}
           onBack={() => setShowAdmin(false)}
+        />
+      ) : openChat ? (
+        <TradeChat
+          chat={openChat}
+          user={user}
+          onComplete={handleCompleteTrade}
+          onCancel={handleCancelTrade}
+          onBlock={handleBlock}
+          onBack={() => { setOpenChat(null); refreshTrades() }}
+        />
+      ) : offersFor ? (
+        <BidInbox
+          listing={offersFor}
+          onAccept={handleAcceptOffer}
+          onDecline={handleDeclineOffer}
+          onBack={() => { setOffersFor(null); refreshTrades() }}
+        />
+      ) : offerTarget ? (
+        <MakeOffer
+          listing={offerTarget}
+          collection={enrichedCollection}
+          myListings={myListings}
+          onSend={handleMakeOffer}
+          onBack={() => { setOfferTarget(null); refreshTrades() }}
         />
       ) : showInvite ? (
         <InviteScreen user={user} onBack={() => setShowInvite(false)} />
@@ -3861,6 +4956,20 @@ export default function App() {
               onSubmit={() => setShowSubmit(true)}
               onReRank={startReRank}
               onAddPhotos={handleAddPhotos}
+              myListings={myListings}
+              offerCounts={offerCounts}
+              onToggleTrade={handleToggleTrade}
+              onListingPhoto={handleListingPhoto}
+              onOpenOffers={setOffersFor}
+            />
+          )}
+          {tab === 'trades' && (
+            <Trades
+              user={user}
+              onOffer={setOfferTarget}
+              onOpenChat={setOpenChat}
+              onSeenOffers={refreshTrades}
+              onSheetOpenChange={setSheetOpen}
             />
           )}
           {tab === 'profile' && (
@@ -3887,7 +4996,7 @@ export default function App() {
           )}
         </>
       )}
-      {!sheetOpen && <TabBar active={tab} onNav={handleNav} />}
+      {!sheetOpen && <TabBar active={tab} onNav={handleNav} tradeBadge={tradeBadge} />}
     </div>
   )
 }
