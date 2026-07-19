@@ -53,10 +53,14 @@ Regenerate any time: `node store-assets/shots.mjs "$PWD/store-assets/screenshots
 > • Follow friends to unlock their collections and see how your lists stack up.
 > • Friends, City, and World leaderboards show where the best matchbooks are hiding.
 >
+> TRADE
+> • List a double for trade, browse what other collectors have, and offer a swap — one matchbook or a bundle.
+> • Deal done in a private chat. No addresses, no payments — and every collector's completed-trade record is public, so you know who you're dealing with.
+>
 > Your collection is followers-only. Your location is never tracked or stored. Free.
 
 **Keywords** (100 chars max, comma-separated, no spaces needed):
-`matchbook,matches,collect,collector,bar,restaurant,map,rank,nightlife,souvenir,hobby,memorabilia`
+`matchbook,matches,collect,collector,bar,restaurant,map,rank,trade,souvenir,hobby,memorabilia`
 (97 chars)
 
 - **Support URL:** `https://phillumeni.vercel.app/support.html`
@@ -91,7 +95,8 @@ Click **Get Started** → "Do you collect data?" → **Yes**. Then declare exact
 | Contact Info → Name | Yes | Yes | No | App Functionality |
 | Contact Info → Email Address | Yes | Yes | No | App Functionality |
 | User Content → Photos or Videos | Yes | Yes | No | App Functionality |
-| User Content → Other User Content (spots, rankings, follows) | Yes | Yes | No | App Functionality |
+| User Content → **Messages** (private trade chat between two collectors) | Yes | Yes | No | App Functionality |
+| User Content → Other User Content (spots, rankings, follows, trade listings/offers) | Yes | Yes | No | App Functionality |
 | Identifiers → User ID | Yes | Yes | No | App Functionality |
 | **Location** | **No — not collected** | — | — | The map's locate button uses location on-device only; it is never sent to or stored on our servers (matches the privacy policy). |
 
@@ -114,10 +119,13 @@ consumption — the standard answer for restaurant-discovery apps is "No" on the
 alcohol question. If Review disagrees, flip it to "infrequent/mild references"
 and the rating becomes 17+ in some regions; start with No.
 
-**Known review-risk note:** Apple's UGC guideline (1.2) sometimes asks social apps
-for a "block user" capability (we have report + human moderation, not per-user
-blocking). If the review raises it, that's a small build — ask Claude for the
-block feature and resubmit.
+**Guideline 1.2 checklist — all BUILT (as of build 6), cite these if Review asks:**
+- Per-user **block** (collector profile ⋯ and trade-chat ⋯) — mutual disappearance,
+  ends active trades between the pair
+- **Report**: content (fake-photo reports), venues (availability), and trade
+  conversations — each lands in a human-reviewed admin queue
+- Private trade chat is 1-on-1 only, opt-in via an accepted offer, read-only after
+  the trade closes, and never includes addresses
 
 ---
 

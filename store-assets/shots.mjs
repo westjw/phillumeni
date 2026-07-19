@@ -88,5 +88,11 @@ await sleep(2000)
 await shot('07-friends-board')
 console.log('shot 07')
 
+// ── 8. Trades: the marketplace (browse cards with covers + trade counts) ──
+await tapTab('Trades')
+await sleep(3000)
+await shot('08-trades-browse')
+console.log('shot 08')
+
 await browser.close()
 console.log('DONE')
