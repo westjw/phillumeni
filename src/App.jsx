@@ -82,6 +82,17 @@ const isKeepsake = (v) => v?.kind === 'keepsake' || (Number(v?.lat) === 0 && Num
 const isRetired = (v) => v?.status === 'closed' || v?.status === 'discontinued'
 const retiredLabel = (v) => (v?.status === 'discontinued' ? 'No longer makes matchbooks' : 'Closed')
 
+// Dedup-grade name equality: "The Dead Rabbit" == "dead rabbit" == "Déad Rabbit!".
+// Exact-string matching is how Bar Snack nearly tripled — a leading "The", a
+// stray period, or an accent is enough for the same bar to read as a new one.
+const normName = (s) => (s || '')
+  .toLowerCase()
+  .normalize('NFD').replace(/[̀-ͯ]/g, '') // strip diacritics
+  .replace(/[^a-z0-9 ]/g, '')
+  .replace(/^the /, '')
+  .replace(/\s+/g, ' ')
+  .trim()
+
 // ─── SMALL COMPONENTS ────────────────────────────────────
 const Av = ({ ini, bg, tc, size = 34 }) => (
   <div style={{ width: size, height: size, borderRadius: '50%', background: bg, color: tc, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * .34, fontWeight: 600, flexShrink: 0 }}>{ini}</div>
@@ -394,10 +405,15 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
 }
 
 // ─── EXPLORE SCREEN ──────────────────────────────────────
-function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeReport, onSubmit, venuesError, onRetry, onSheetOpenChange, user, onRank, isAdmin, onSetCover }) {
+function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeReport, onSubmit, venuesError, onRetry, onSheetOpenChange, user, onRank, isAdmin, onSetCover, onMerge }) {
   const [selected, setSelected] = useState(null)
   const [filter, setFilter] = useState('all')
   const [reporting, setReporting] = useState(null) // venue being reported
+  // Admin merge-duplicate flow: pick the keeper, confirm, done.
+  const [mergeOpen, setMergeOpen] = useState(false)
+  const [mergeTarget, setMergeTarget] = useState(null)
+  const [mergeBusy, setMergeBusy] = useState(false)
+  const [mergeErr, setMergeErr] = useState('')
   const [venuePhotos, setVenuePhotos] = useState([]) // anonymized gallery for the open venue
   const [collectErr, setCollectErr] = useState('')
   const [mapCenter, setMapCenter] = useState(NYC) // where the map is looking (drives "nearby")
@@ -410,7 +426,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
   const reportedIds = useMemo(() => reported.map(r => r.venue_id), [reported])
 
   // Fresh venue, fresh follow-up state.
-  useEffect(() => { setPostCollect(false); setPcPhotos([]); setPcErr(''); setPcBusy(false) }, [selected?.id])
+  useEffect(() => { setPostCollect(false); setPcPhotos([]); setPcErr(''); setPcBusy(false); setMergeOpen(false); setMergeTarget(null); setMergeErr('') }, [selected?.id])
 
   const addPostCollectPhotos = async (e) => {
     const files = [...(e.target.files || [])]
@@ -599,6 +615,13 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
                 </OutlineBtn>
               </>
             )}
+            {/* Admin: fold a duplicate into its real twin — the in-app version
+                of what fixing Bar Snack took a SQL session to do. */}
+            {isAdmin && (
+              <OutlineBtn onClick={() => setMergeOpen(true)} style={{ marginTop: 8 }}>
+                <i className="ti ti-arrows-join" style={{ fontSize: 12, marginRight: 5 }} />Merge duplicate…
+              </OutlineBtn>
+            )}
           </div>
         ) : venues.length === 0 && !venuesError ? (
           // Day-zero: a real, designed empty state — not a fallback (spec §1)
@@ -651,6 +674,73 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
           onFake={onFakeReport}
         />
       )}
+
+      {/* Admin merge sheet. The venue ON SCREEN is the duplicate that dies;
+          the admin picks which existing venue is the real one. */}
+      {mergeOpen && selected && (() => {
+        const sameName = venues.filter(v => v.id !== selected.id && !isKeepsake(v) && normName(v.name) === normName(selected.name))
+        const near = venues.filter(v => v.id !== selected.id && !isKeepsake(v)
+          && Math.abs(Number(v.lat) - Number(selected.lat)) < 0.015
+          && Math.abs(Number(v.lng) - Number(selected.lng)) < 0.02
+          && !sameName.some(s => s.id === v.id))
+        const candidates = [...sameName, ...near].slice(0, 10)
+        return (
+          <div style={{ position: 'absolute', inset: 0, zIndex: 40, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+            <div onClick={() => !mergeBusy && (setMergeOpen(false), setMergeTarget(null))} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+            <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px', maxHeight: '80%', overflowY: 'auto' }}>
+              <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
+              {mergeTarget ? (
+                <>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 6 }}>Merge these?</div>
+                  <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 16 }}>
+                    <span style={{ fontWeight: 700, color: C.red }}>{selected.name}</span> ({selected.neighborhood || selected.city}) will be <span style={{ fontWeight: 700 }}>deleted</span>.
+                    Its collectors, photos, reports and trades move to{' '}
+                    <span style={{ fontWeight: 700, color: C.green }}>{mergeTarget.name}</span> ({mergeTarget.neighborhood || mergeTarget.city}), which stays.
+                  </div>
+                  {mergeErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, lineHeight: 1.4 }}>{mergeErr}</div>}
+                  <button onClick={async () => {
+                    setMergeBusy(true); setMergeErr('')
+                    const res = await onMerge?.(selected.id, mergeTarget.id)
+                    setMergeBusy(false)
+                    if (res?.error) { setMergeErr(res.error); return }
+                    setMergeOpen(false); setMergeTarget(null); setSelected(null)
+                  }} disabled={mergeBusy}
+                    style={{ width: '100%', padding: 14, background: C.red, color: '#fff', border: 'none', borderRadius: 13, fontSize: 15, fontWeight: 700, cursor: 'pointer', marginBottom: 8, opacity: mergeBusy ? 0.6 : 1 }}>
+                    {mergeBusy ? 'Merging…' : `Delete "${selected.name}" and merge`}
+                  </button>
+                  <button onClick={() => setMergeTarget(null)} disabled={mergeBusy} style={{ width: '100%', padding: 13, background: 'none', border: 'none', color: C.muted, fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Back</button>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 6 }}>Which one is the real {selected.name}?</div>
+                  <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 16 }}>
+                    The venue you're viewing is treated as the duplicate — pick the listing that should survive.
+                  </div>
+                  {candidates.length === 0 && (
+                    <div style={{ background: C.surface, borderRadius: 12, padding: '13px', fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 12 }}>
+                      No same-name or nearby venues found — this doesn't look like a duplicate.
+                    </div>
+                  )}
+                  {candidates.map(v => (
+                    <button key={v.id} onClick={() => { setMergeErr(''); setMergeTarget(v) }}
+                      style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '11px 13px', marginBottom: 9, textAlign: 'left', borderRadius: 14, border: `1.5px solid ${C.border}`, background: C.card, cursor: 'pointer' }}>
+                      {v.cover_photo_url
+                        ? <img src={v.cover_photo_url} alt="" style={{ width: 40, height: 40, borderRadius: 10, objectFit: 'cover', flexShrink: 0 }} />
+                        : <div style={{ width: 40, height: 40, borderRadius: 10, background: v.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{v.emoji}</div>}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v.name}</div>
+                        <div style={{ fontSize: 11.5, color: C.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{[v.address, v.neighborhood || v.city].filter(Boolean).join(' · ')}</div>
+                      </div>
+                      {normName(v.name) === normName(selected.name) && <Tag label="Same name" bg={C.amberBg} color={C.amber} />}
+                    </button>
+                  ))}
+                  <button onClick={() => setMergeOpen(false)} style={{ width: '100%', padding: 13, background: 'none', border: 'none', color: C.muted, fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                </>
+              )}
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
@@ -1253,15 +1343,18 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
 
         // Second dedup net: the seeded + manually-added venues have NO
         // mapbox_id, so the id check above sails right past all ~670 of them
-        // and mints a duplicate (how Bar Snack nearly got a third row). Same
-        // name + ~2km proximity rule the manual path uses.
+        // and mints a duplicate (how Bar Snack nearly got a third row).
+        // Candidates come by ~2km bbox alone; the NAME comparison happens here
+        // in normalized form, because SQL ilike is exact and "The Dead Rabbit"
+        // vs "Dead Rabbit" would sail through it.
         const { data: nearby } = await supabase
-          .from('venues').select('*').ilike('name', picked.name)
+          .from('venues').select('*')
           .gte('lat', lat - 0.02).lte('lat', lat + 0.02)
           .gte('lng', lng - 0.02).lte('lng', lng + 0.02)
-          .limit(1)
-        if (nearby && nearby.length) {
-          venue = nearby[0]
+          .limit(1000) // a ~2km box in Manhattan holds >100 venues — truncating here silently drops the twin
+        const twin = (nearby || []).find(v => !isKeepsake(v) && normName(v.name) === normName(picked.name))
+        if (twin) {
+          venue = twin
         } else {
 
         const venueRow = {
@@ -1459,17 +1552,17 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
         verified: false,
         added_manually: true,
       }
-      // Dedup: don't create a second venue for a place already on the map. Match
-      // by name (case-insensitive) + proximity (~2km), so the same name in a
-      // different city doesn't falsely merge but a genuine re-add does.
+      // Dedup: don't create a second venue for a place already on the map.
+      // NORMALIZED name + ~2km proximity — same-name-different-city stays
+      // distinct, but "The X"/"X." / accent variants of a nearby twin merge.
       let venue = null
       let inserted = false
       const { data: dupes } = await supabase
-        .from('venues').select('*').ilike('name', name)
+        .from('venues').select('*')
         .gte('lat', lat - 0.02).lte('lat', lat + 0.02)
         .gte('lng', lng - 0.02).lte('lng', lng + 0.02)
-        .limit(1)
-      if (dupes && dupes.length) venue = dupes[0]
+        .limit(1000) // dense-city box exceeds 100 rows; truncation hides the twin
+      venue = (dupes || []).find(v => !isKeepsake(v) && normName(v.name) === normName(name)) || null
 
       if (!venue) {
         if (placeClosed) { venueRow.status = 'closed'; venueRow.closed_at = new Date().toISOString() }
@@ -4430,6 +4523,18 @@ export default function App() {
     return true
   }
 
+  // Admin folds a duplicate venue into its real twin (026). Collectors, photos,
+  // reports and live trades move; the dupe row dies. Surfaces the RPC's own
+  // error (e.g. "active trade on the duplicate") rather than a generic one.
+  const handleMergeVenues = async (dupeId, keepId) => {
+    const { error } = await supabase.rpc('admin_merge_venues', { p_keep: keepId, p_dupe: dupeId })
+    if (error) { console.error('Merge failed', error); return { error: error.message } }
+    setVenues(prev => prev.filter(v => v.id !== dupeId))
+    refreshCollection() // your own rows may have moved venues
+    refreshTrades()
+    return {}
+  }
+
   // Admin picks a venue's cover photo from the community gallery (025). The RPC
   // refuses URLs that weren't actually submitted for that venue.
   const handleSetCover = async (venueId, url) => {
@@ -4987,6 +5092,7 @@ export default function App() {
               })}
               isAdmin={isAdmin}
               onSetCover={handleSetCover}
+              onMerge={handleMergeVenues}
             />
           )}
           {tab === 'rankings' && (
