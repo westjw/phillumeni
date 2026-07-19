@@ -394,7 +394,7 @@ function AppMap({ venues, collectionIds, reportedIds, onSelectVenue, selectedVen
 }
 
 // ─── EXPLORE SCREEN ──────────────────────────────────────
-function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeReport, onSubmit, venuesError, onRetry, onSheetOpenChange, user, onRank }) {
+function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeReport, onSubmit, venuesError, onRetry, onSheetOpenChange, user, onRank, isAdmin, onSetCover }) {
   const [selected, setSelected] = useState(null)
   const [filter, setFilter] = useState('all')
   const [reporting, setReporting] = useState(null) // venue being reported
@@ -511,9 +511,13 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
               <i className="ti ti-arrow-left" style={{ fontSize: 13 }} /> All nearby
             </button>
             <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 10 }}>
-              <div style={{ width: 52, height: 52, borderRadius: 13, background: selected.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, flexShrink: 0 }}>
-                {selected.emoji}
-              </div>
+              {/* The venue's face is a real matchbook, not a flame — the cover
+                  (auto-filled from the first submitted photo, admin-choosable). */}
+              {selected.cover_photo_url
+                ? <img src={selected.cover_photo_url} alt="" style={{ width: 52, height: 52, borderRadius: 13, objectFit: 'cover', flexShrink: 0 }} />
+                : <div style={{ width: 52, height: 52, borderRadius: 13, background: selected.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, flexShrink: 0 }}>
+                    {selected.emoji}
+                  </div>}
               <div>
                 <div style={{ fontSize: 18, fontWeight: 700, color: C.text, letterSpacing: '-.3px', marginBottom: 2 }}>{selected.name}</div>
                 <div style={{ fontSize: 12, color: C.muted }}>{selected.address}</div>
@@ -525,16 +529,26 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
               <Tag label={selected.type || 'Spot'} bg={C.surface} color={C.sec} />
             </div>
 
-            {/* Community gallery — every matchbook submitted here, anonymized */}
+            {/* Community gallery — every matchbook submitted here, anonymized.
+                Admins: tap a photo to make it the venue's cover. */}
             {venuePhotos.length > 0 && (
               <div style={{ marginBottom: 14 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.sec, letterSpacing: '.4px', textTransform: 'uppercase', marginBottom: 8 }}>
-                  Matchbooks found here · {venuePhotos.length}
+                  Matchbooks found here · {venuePhotos.length}{isAdmin ? ' · tap to set cover' : ''}
                 </div>
                 <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
                   {venuePhotos.map((url, i) => (
-                    <img key={i} src={url} alt="Matchbook" loading="lazy"
-                      style={{ width: 104, height: 104, objectFit: 'cover', borderRadius: 12, flexShrink: 0, border: `0.5px solid ${C.border}`, background: C.surface }} />
+                    <div key={i} style={{ position: 'relative', flexShrink: 0 }}>
+                      <img src={url} alt="Matchbook" loading="lazy"
+                        onClick={isAdmin ? async () => {
+                          const ok = await onSetCover?.(selected.id, url)
+                          if (ok !== false) setSelected(s => (s ? { ...s, cover_photo_url: url } : s))
+                        } : undefined}
+                        style={{ width: 104, height: 104, objectFit: 'cover', borderRadius: 12, border: url === selected.cover_photo_url ? `2px solid ${C.amber}` : `0.5px solid ${C.border}`, background: C.surface, cursor: isAdmin ? 'pointer' : 'default' }} />
+                      {url === selected.cover_photo_url && (
+                        <span style={{ position: 'absolute', top: 5, left: 5, background: C.amber, color: '#fff', fontSize: 9, fontWeight: 800, letterSpacing: '.4px', padding: '2px 7px', borderRadius: 99 }}>COVER</span>
+                      )}
+                    </div>
                   ))}
                 </div>
               </div>
@@ -601,7 +615,9 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
             <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 10 }}>{listed.length} spots nearby</div>
             {listed.map(v => (
               <div key={v.id} onClick={() => setSelected(v)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '9px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
-                <div style={{ width: 38, height: 38, borderRadius: 11, background: v.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{v.emoji}</div>
+                {v.cover_photo_url
+                  ? <img src={v.cover_photo_url} alt="" loading="lazy" style={{ width: 38, height: 38, borderRadius: 11, objectFit: 'cover', flexShrink: 0 }} />
+                  : <div style={{ width: 38, height: 38, borderRadius: 11, background: v.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{v.emoji}</div>}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v.name}</div>
                   <div style={{ fontSize: 11, color: C.muted }}>{v.neighborhood || v.city}</div>
@@ -712,6 +728,9 @@ function MatchbookDetail({ item, venue, title, backLabel, onBack, onReRank, onRe
         </div>
         {detailPhotos.length ? (
           <img src={detailPhotos[0]} alt="Your matchbook" style={{ width: '100%', height: 210, objectFit: 'cover', display: 'block' }} />
+        ) : v.cover_photo_url ? (
+          // No photos of YOUR copy — the venue's community cover beats a flame
+          <img src={v.cover_photo_url} alt="" style={{ width: '100%', height: 210, objectFit: 'cover', display: 'block' }} />
         ) : (
           <div style={{ width: '100%', height: 210, background: v.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 72 }}>{v.emoji}</div>
         )}
@@ -1232,6 +1251,19 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
         const [lng, lat] = coords
         const place = placeFromContext(feat?.properties)
 
+        // Second dedup net: the seeded + manually-added venues have NO
+        // mapbox_id, so the id check above sails right past all ~670 of them
+        // and mints a duplicate (how Bar Snack nearly got a third row). Same
+        // name + ~2km proximity rule the manual path uses.
+        const { data: nearby } = await supabase
+          .from('venues').select('*').ilike('name', picked.name)
+          .gte('lat', lat - 0.02).lte('lat', lat + 0.02)
+          .gte('lng', lng - 0.02).lte('lng', lng + 0.02)
+          .limit(1)
+        if (nearby && nearby.length) {
+          venue = nearby[0]
+        } else {
+
         const venueRow = {
           name: picked.name,
           address: picked.address.split(',').slice(0, 2).join(','),
@@ -1265,6 +1297,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
         } else {
           venue = inserted
         }
+        } // end: no nearby name-match — we really did create it
       }
 
       await collectVenue(venue, placeClosed)
@@ -3601,8 +3634,8 @@ function Trades({ user, onOffer, onOpenChat, onSeenOffers, onSheetOpenChange }) 
                 {rows.map(r => (
                   <Card key={r.listing_id} style={{ padding: 0, marginBottom: 12, overflow: 'hidden' }}>
                     <div style={{ position: 'relative', height: 150, background: r.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {r.photo_url
-                        ? <img src={r.photo_url} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      {(r.photo_url || r.cover_photo_url)
+                        ? <img src={r.photo_url || r.cover_photo_url} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                         : <span style={{ fontSize: 46 }}>{r.emoji}</span>}
                       {r.offer_count > 0 && (
                         <span style={{ position: 'absolute', top: 10, left: 10, background: C.amber, color: '#fff', fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 99 }}>
@@ -3610,7 +3643,7 @@ function Trades({ user, onOffer, onOpenChat, onSeenOffers, onSheetOpenChange }) 
                         </span>
                       )}
                       <span style={{ position: 'absolute', top: 10, right: 10, background: r.photo_url ? 'rgba(0,0,0,0.7)' : C.surface, color: r.photo_url ? '#fff' : C.muted, fontSize: 10.5, fontWeight: 700, padding: '4px 9px', borderRadius: 99 }}>
-                        {r.photo_url ? '📷 Photo' : 'No photo'}
+                        {(r.photo_url || r.cover_photo_url) ? '📷 Photo' : 'No photo'}
                       </span>
                     </div>
                     <div style={{ padding: '12px 14px' }}>
@@ -3754,8 +3787,8 @@ function MakeOffer({ listing, collection, myListings, onSend, onBack }) {
 
         <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: 18, border: `0.5px solid ${C.border}` }}>
           <div style={{ height: 110, background: listing.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            {listing.photo_url
-              ? <img src={listing.photo_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            {(listing.photo_url || listing.cover_photo_url)
+              ? <img src={listing.photo_url || listing.cover_photo_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               : <span style={{ fontSize: 40 }}>{listing.emoji}</span>}
           </div>
           <div style={{ background: C.surface, padding: '10px 13px' }}>
@@ -4397,6 +4430,15 @@ export default function App() {
     return true
   }
 
+  // Admin picks a venue's cover photo from the community gallery (025). The RPC
+  // refuses URLs that weren't actually submitted for that venue.
+  const handleSetCover = async (venueId, url) => {
+    const { error } = await supabase.rpc('set_venue_cover', { p_venue_id: venueId, p_url: url })
+    if (error) { console.error('Set cover failed', error); return false }
+    setVenues(prev => prev.map(v => (v.id === venueId ? { ...v, cover_photo_url: url } : v)))
+    return true
+  }
+
   // Admin override: clear a venue's live reports, optionally putting it back on
   // the map (venues has no UPDATE policy at all, so this must go through the RPC).
   const handleResolveReports = async (venueId, reopen) => {
@@ -4943,6 +4985,8 @@ export default function App() {
                 photos,
                 score: null, // fresh collect — first-time ranking copy
               })}
+              isAdmin={isAdmin}
+              onSetCover={handleSetCover}
             />
           )}
           {tab === 'rankings' && (
