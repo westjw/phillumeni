@@ -11,11 +11,12 @@ Drag into the **iPhone 6.5" Display** slot in this order (first 3 show in search
 
 1. `01-explore-map.png` — the map, zoomed into the Village, pins everywhere
 2. `04-head-to-head.png` — two real matchbooks facing off (the signature)
-3. `03-rankings.png` — your ranked list with scores + Unranked section
-4. `05-collection.png` — the photo grid
-5. `06-matchbook-detail.png` — matchbook detail with photo carousel
-6. `07-friends-board.png` — the Friends leaderboard
-7. `02-venue-detail.png` — venue sheet with "Got it"
+3. `08-trades-browse.png` — the marketplace, real matchbook photos on the cards
+4. `03-rankings.png` — your ranked list with scores + Unranked section
+5. `05-collection.png` — the photo grid
+6. `06-matchbook-detail.png` — matchbook detail with photo carousel
+7. `07-friends-board.png` — the Friends leaderboard
+8. `02-venue-detail.png` — venue sheet with "Got it"
 
 Regenerate any time: `node store-assets/shots.mjs "$PWD/store-assets/screenshots"`
 (dev server must be running; uses the demo reviewer account).
@@ -67,9 +68,8 @@ Regenerate any time: `node store-assets/shots.mjs "$PWD/store-assets/screenshots
 - **Marketing URL** (optional): `https://phillumeni.vercel.app`
 - **Copyright:** `© 2026 John West`
 - **Version:** 1.0
-- **Build:** pick the NEWEST processed build (archive the pending batch first —
-  the store build should include the carousel + Collection rank button + seeded-map
-  era fixes).
+- **Build:** **1.0 (6)** — the first build carrying Trades, venue cover photos,
+  block, and the availability model. Do not select 1–5.
 
 **App Review Information:**
 - Contact: John West / your phone / wyethwest@gmail.com
@@ -78,9 +78,11 @@ Regenerate any time: `node store-assets/shots.mjs "$PWD/store-assets/screenshots
   collector so every feature is reviewable).
 - Notes (optional, paste if you like):
   > phillumeni is a matchbook-collecting app. The demo account has a ranked
-  > collection. To test the core flow: Rankings tab → tap "Rank" on an Unranked
-  > spot → answer the head-to-head prompts. Account deletion: Profile → Delete
-  > account. Collections are visible only to approved followers by design.
+  > collection. Core flow: Rankings tab → tap "Rank" on an Unranked spot →
+  > answer the head-to-head prompts. Trading: Trades tab → any card → Offer →
+  > pick a matchbook → Send (the other collector must accept before any chat
+  > opens). Blocking: any collector profile → ⋯ → Block. Account deletion:
+  > Profile → Delete account. Collections are followers-only by design.
 
 **Version Release:** "Automatically release this version" (recommended).
 
