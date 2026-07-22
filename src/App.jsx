@@ -85,6 +85,28 @@ const retiredLabel = (v) => (v?.status === 'discontinued' ? 'No longer makes mat
 // Dedup-grade name equality: "The Dead Rabbit" == "dead rabbit" == "Déad Rabbit!".
 // Exact-string matching is how Bar Snack nearly tripled — a leading "The", a
 // stray period, or an accent is enough for the same bar to read as a new one.
+// Small-context <img>: tries the 480px thumb sibling ('<key>.t', uploaded
+// alongside every new photo) and falls back to the full 1600px original for
+// legacy uploads. The miss-set stops re-probing thumbs that don't exist.
+const thumbMiss = new Set()
+function Pic({ src, alt = '', style, ...rest }) {
+  const useThumb = src && src.includes('/matchbooks/') && !thumbMiss.has(src)
+  return (
+    <img src={useThumb ? src + '.t' : src} alt={alt} loading="lazy" decoding="async" style={style} {...rest}
+      onError={(e) => { if (useThumb) { thumbMiss.add(src); e.currentTarget.src = src } }} />
+  )
+}
+
+// Two names denote the same venue only when their normalized forms match AND
+// aren't empty — normName deletes non-Latin scripts entirely, so without the
+// guard every CJK/Cyrillic-named venue in a bbox would "match" every other.
+const sameVenueName = (a, b) => {
+  const na = normName(a), nb = normName(b)
+  if (na && nb) return na === nb
+  const ra = (a || '').trim().toLowerCase(), rb = (b || '').trim().toLowerCase()
+  return ra !== '' && ra === rb
+}
+
 const normName = (s) => (s || '')
   .toLowerCase()
   .normalize('NFD').replace(/[̀-ͯ]/g, '') // strip diacritics
@@ -441,6 +463,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
         const path = `${user.id}/${crypto.randomUUID()}.jpg`
         const { error: upErr } = await supabase.storage.from('matchbooks').upload(path, blob, { contentType: 'image/jpeg', upsert: false })
         if (upErr) throw upErr
+        downscaleImage(f, 480, 0.72).then(t => supabase.storage.from('matchbooks').upload(path + '.t', t, { contentType: 'image/jpeg', upsert: false })).catch(() => {}) // 480px thumb sibling for lists
         urls.push(supabase.storage.from('matchbooks').getPublicUrl(path).data.publicUrl)
       }
       const merged = [...pcPhotos, ...urls]
@@ -478,18 +501,22 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
 
   // "Nearby" = closest to where the map is looking, not alphabetical — with
   // hundreds of venues, A-Z-first-8 showed the same list to everyone.
-  const listed = venues
-    .filter(v => {
-      if (isKeepsake(v)) return false // no place — never "nearby"
-      if (reportedIds.includes(v.id) && !collectionIds.includes(v.id)) return false
-      if (isRetired(v)) return false // nothing to collect here anymore
-      if (filter === 'open') return v.is_open
-      if (filter === 'multi') return (v.sources || []).length >= 2
-      return true
-    })
-    .map(v => ({ ...v, _d: (v.lat - mapCenter.lat) ** 2 + ((v.lng - mapCenter.lng) * 0.766) ** 2 }))
-    .sort((a, b) => a._d - b._d)
-    .slice(0, 20)
+  // Memoized: this ran (filter + clone-all + full sort over ~740 venues) on
+  // EVERY Explore render — each pan, tap, and badge tick.
+  const listed = useMemo(() => {
+    const repSet = new Set(reportedIds), colSet = new Set(collectionIds)
+    const scored = []
+    for (const v of venues) {
+      if (isKeepsake(v)) continue // no place — never "nearby"
+      if (repSet.has(v.id) && !colSet.has(v.id)) continue
+      if (isRetired(v)) continue // nothing to collect here anymore
+      if (filter === 'open' && !v.is_open) continue
+      if (filter === 'multi' && (v.sources || []).length < 2) continue
+      scored.push([(v.lat - mapCenter.lat) ** 2 + ((v.lng - mapCenter.lng) * 0.766) ** 2, v])
+    }
+    scored.sort((a, b) => a[0] - b[0])
+    return scored.slice(0, 20).map(x => x[1])
+  }, [venues, mapCenter, filter, reportedIds, collectionIds])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, position: 'relative' }}>
@@ -530,7 +557,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
               {/* The venue's face is a real matchbook, not a flame — the cover
                   (auto-filled from the first submitted photo, admin-choosable). */}
               {selected.cover_photo_url
-                ? <img src={selected.cover_photo_url} alt="" style={{ width: 52, height: 52, borderRadius: 13, objectFit: 'cover', flexShrink: 0 }} />
+                ? <Pic src={selected.cover_photo_url} style={{ width: 52, height: 52, borderRadius: 13, objectFit: 'cover', flexShrink: 0 }} />
                 : <div style={{ width: 52, height: 52, borderRadius: 13, background: selected.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, flexShrink: 0 }}>
                     {selected.emoji}
                   </div>}
@@ -555,7 +582,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
                 <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
                   {venuePhotos.map((url, i) => (
                     <div key={i} style={{ position: 'relative', flexShrink: 0 }}>
-                      <img src={url} alt="Matchbook" loading="lazy"
+                      <Pic src={url} alt="Matchbook"
                         onClick={isAdmin ? async () => {
                           const ok = await onSetCover?.(selected.id, url)
                           if (ok !== false) setSelected(s => (s ? { ...s, cover_photo_url: url } : s))
@@ -639,7 +666,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
             {listed.map(v => (
               <div key={v.id} onClick={() => setSelected(v)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '9px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
                 {v.cover_photo_url
-                  ? <img src={v.cover_photo_url} alt="" loading="lazy" style={{ width: 38, height: 38, borderRadius: 11, objectFit: 'cover', flexShrink: 0 }} />
+                  ? <Pic src={v.cover_photo_url} style={{ width: 38, height: 38, borderRadius: 11, objectFit: 'cover', flexShrink: 0 }} />
                   : <div style={{ width: 38, height: 38, borderRadius: 11, background: v.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{v.emoji}</div>}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v.name}</div>
@@ -678,7 +705,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
       {/* Admin merge sheet. The venue ON SCREEN is the duplicate that dies;
           the admin picks which existing venue is the real one. */}
       {mergeOpen && selected && (() => {
-        const sameName = venues.filter(v => v.id !== selected.id && !isKeepsake(v) && normName(v.name) === normName(selected.name))
+        const sameName = venues.filter(v => v.id !== selected.id && !isKeepsake(v) && sameVenueName(v.name, selected.name))
         const near = venues.filter(v => v.id !== selected.id && !isKeepsake(v)
           && Math.abs(Number(v.lat) - Number(selected.lat)) < 0.015
           && Math.abs(Number(v.lng) - Number(selected.lng)) < 0.02
@@ -731,7 +758,7 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
                         <div style={{ fontSize: 14.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v.name}</div>
                         <div style={{ fontSize: 11.5, color: C.muted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{[v.address, v.neighborhood || v.city].filter(Boolean).join(' · ')}</div>
                       </div>
-                      {normName(v.name) === normName(selected.name) && <Tag label="Same name" bg={C.amberBg} color={C.amber} />}
+                      {sameVenueName(v.name, selected.name) && <Tag label="Same name" bg={C.amberBg} color={C.amber} />}
                     </button>
                   ))}
                   <button onClick={() => setMergeOpen(false)} style={{ width: '100%', padding: 13, background: 'none', border: 'none', color: C.muted, fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
@@ -854,7 +881,7 @@ function MatchbookDetail({ item, venue, title, backLabel, onBack, onReRank, onRe
           {detailPhotos.length > 0 && (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
               {detailPhotos.map((url, i) => (
-                <img key={i} src={url} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, border: i === 0 ? `2px solid ${C.amber}` : `0.5px solid ${C.border}` }} />
+                <Pic key={i} src={url} style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, border: i === 0 ? `2px solid ${C.amber}` : `0.5px solid ${C.border}` }} />
               ))}
               {owned && onAddPhotos && (
                 <button onClick={() => !photoBusy && fileRef.current?.click()}
@@ -1014,7 +1041,7 @@ function Collection({ items, venues, onRemove, onSubmit, onReRank, onAddPhotos, 
               // page jank). Lazy imgs only fetch what's on screen.
               <div key={item.id} onClick={() => setDetail(item)} style={{ aspectRatio: '1', background: item.venue.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 30, cursor: 'pointer', position: 'relative', overflow: 'hidden' }}>
                 {item.photo_url
-                  ? <img src={item.photo_url} alt="" loading="lazy" decoding="async" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', background: '#000' }} />
+                  ? <Pic src={item.photo_url} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', background: '#000' }} />
                   : item.venue.emoji}
                 {isRetired(item.venue) && (
                   <div style={{ position: 'absolute', top: 4, left: 4, background: 'rgba(0,0,0,0.72)', color: '#fff', fontSize: 8, fontWeight: 700, letterSpacing: .3, padding: '1px 5px', borderRadius: 99 }}>
@@ -1033,7 +1060,7 @@ function Collection({ items, venues, onRemove, onSubmit, onReRank, onAddPhotos, 
               <div key={item.id} onClick={() => setDetail(item)} style={{ display: 'flex', gap: 11, alignItems: 'center', padding: '10px 0', borderBottom: `0.5px solid ${C.border}`, cursor: 'pointer' }}>
                 <div style={{ width: 52, height: 52, borderRadius: 10, background: item.venue.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0, overflow: 'hidden', position: 'relative' }}>
                   {item.photo_url
-                    ? <img src={item.photo_url} alt="" loading="lazy" decoding="async" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', background: '#000' }} />
+                    ? <Pic src={item.photo_url} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', background: '#000' }} />
                     : item.venue.emoji}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -1230,6 +1257,7 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
           .from('matchbooks')
           .upload(path, upload, { contentType: resized ? 'image/jpeg' : (file.type || 'image/jpeg'), upsert: false })
         if (upErr) throw upErr
+        downscaleImage(file, 480, 0.72).then(t => supabase.storage.from('matchbooks').upload(path + '.t', t, { contentType: 'image/jpeg', upsert: false })).catch(() => {}) // 480px thumb sibling
         const { data } = supabase.storage.from('matchbooks').getPublicUrl(path)
         setPhotos(prev => prev.map(p => (p.id === id ? { ...p, url: data.publicUrl, path, status: 'done' } : p)))
       } catch (err) {
@@ -1347,14 +1375,22 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
         // Candidates come by ~2km bbox alone; the NAME comparison happens here
         // in normalized form, because SQL ilike is exact and "The Dead Rabbit"
         // vs "Dead Rabbit" would sail through it.
+        // Slim columns for the match; the full row is fetched only on a hit.
         const { data: nearby } = await supabase
-          .from('venues').select('*')
+          .from('venues').select('id,name,lat,lng,kind,mapbox_id')
           .gte('lat', lat - 0.02).lte('lat', lat + 0.02)
           .gte('lng', lng - 0.02).lte('lng', lng + 0.02)
           .limit(1000) // a ~2km box in Manhattan holds >100 venues — truncating here silently drops the twin
-        const twin = (nearby || []).find(v => !isKeepsake(v) && normName(v.name) === normName(picked.name))
+        // A candidate with a DIFFERENT mapbox_id is a different Mapbox POI —
+        // same-name multi-location spots (Joe's Pizza, The Smith) within 2km
+        // must NOT absorb each other.
+        const twin = (nearby || []).find(v => !isKeepsake(v)
+          && sameVenueName(v.name, picked.name)
+          && !(v.mapbox_id && picked.mapbox_id && v.mapbox_id !== picked.mapbox_id))
         if (twin) {
-          venue = twin
+          const { data: full } = await supabase.from('venues').select('*').eq('id', twin.id).single()
+          venue = full || null
+          if (!venue) throw new Error('Something went wrong. Try again.')
         } else {
 
         const venueRow = {
@@ -1558,11 +1594,15 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
       let venue = null
       let inserted = false
       const { data: dupes } = await supabase
-        .from('venues').select('*')
+        .from('venues').select('id,name,lat,lng,kind')
         .gte('lat', lat - 0.02).lte('lat', lat + 0.02)
         .gte('lng', lng - 0.02).lte('lng', lng + 0.02)
         .limit(1000) // dense-city box exceeds 100 rows; truncation hides the twin
-      venue = (dupes || []).find(v => !isKeepsake(v) && normName(v.name) === normName(name)) || null
+      const manualTwin = (dupes || []).find(v => !isKeepsake(v) && sameVenueName(v.name, name))
+      if (manualTwin) {
+        const { data: full } = await supabase.from('venues').select('*').eq('id', manualTwin.id).single()
+        venue = full || null
+      }
 
       if (!venue) {
         if (placeClosed) { venueRow.status = 'closed'; venueRow.closed_at = new Date().toISOString() }
@@ -2736,7 +2776,7 @@ function ProfileScreen({ user, displayName, collection, onSignOut, onDeleteAccou
             {collection.map(item => item.venue && (
               <div key={item.id} style={{ aspectRatio: '1', background: item.venue.bg_color || '#1A1A1A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, position: 'relative', overflow: 'hidden' }}>
                 {item.photo_url
-                  ? <img src={item.photo_url} alt="" loading="lazy" decoding="async" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', background: '#000' }} />
+                  ? <Pic src={item.photo_url} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', background: '#000' }} />
                   : item.venue.emoji}
                 {isRetired(item.venue) && (
                   <div style={{ position: 'absolute', top: 4, left: 4, background: 'rgba(0,0,0,0.72)', color: '#fff', fontSize: 8, fontWeight: 700, letterSpacing: .3, padding: '1px 5px', borderRadius: 99 }}>
@@ -3634,11 +3674,10 @@ function TradeRecord({ userId, name, compact = false }) {
 
 // Browse every listing, plus the trades you're already in. The city chips filter
 // by the MATCHBOOK's city — what you're hunting, not where the trader lives.
-function Trades({ user, onOffer, onOpenChat, onSeenOffers, onSheetOpenChange }) {
+function Trades({ user, chats, onOffer, onOpenChat, onSeenOffers, onSheetOpenChange }) {
   const [tab, setTab] = useState('browse') // browse | mine
   const [allRows, setAllRows] = useState(null)
   const [city, setCity] = useState('')
-  const [chats, setChats] = useState(null)
   const [withdrawing, setWithdrawing] = useState(null)
 
   // Fetch ONCE unfiltered; the city filter is client-side. Filtering server-side
@@ -3653,13 +3692,8 @@ function Trades({ user, onOffer, onOpenChat, onSeenOffers, onSheetOpenChange }) 
     return () => { cancelled = true }
   }, [tab])
 
-  useEffect(() => {
-    let cancelled = false
-    supabase.rpc('my_trades').then(({ data, error }) => {
-      if (!cancelled) setChats(error ? [] : (data || []))
-    })
-    return () => { cancelled = true }
-  }, [tab])
+  // Chats arrive via props from App's refreshTrades — they're already fetched
+  // for the badge, so fetching my_trades again here doubled every tab open.
 
   // Your outgoing offers — the only place a declined offer is ever announced.
   // Opening the tab marks them seen, which clears them from the badge.
@@ -3735,7 +3769,7 @@ function Trades({ user, onOffer, onOpenChat, onSeenOffers, onSheetOpenChange }) 
                           {r.offer_count} {r.offer_count === 1 ? 'offer' : 'offers'}
                         </span>
                       )}
-                      <span style={{ position: 'absolute', top: 10, right: 10, background: r.photo_url ? 'rgba(0,0,0,0.7)' : C.surface, color: r.photo_url ? '#fff' : C.muted, fontSize: 10.5, fontWeight: 700, padding: '4px 9px', borderRadius: 99 }}>
+                      <span style={{ position: 'absolute', top: 10, right: 10, background: (r.photo_url || r.cover_photo_url) ? 'rgba(0,0,0,0.7)' : C.surface, color: (r.photo_url || r.cover_photo_url) ? '#fff' : C.muted, fontSize: 10.5, fontWeight: 700, padding: '4px 9px', borderRadius: 99 }}>
                         {(r.photo_url || r.cover_photo_url) ? '📷 Photo' : 'No photo'}
                       </span>
                     </div>
@@ -3764,7 +3798,7 @@ function Trades({ user, onOffer, onOpenChat, onSeenOffers, onSheetOpenChange }) 
               </div>
             )}
           </>
-        ) : chats === null ? (
+        ) : !Array.isArray(chats) ? (
           <div style={{ textAlign: 'center', padding: '4rem 1.5rem', color: C.muted, fontSize: 13 }}>Loading…</div>
         ) : (
           <div style={{ padding: '10px 16px 24px' }}>
@@ -4352,6 +4386,7 @@ export default function App() {
   const [offerTarget, setOfferTarget] = useState(null) // browse row → Make offer
   const [offersFor, setOffersFor] = useState(null)     // my listing → bid inbox
   const [openChat, setOpenChat] = useState(null)       // my_trades row → chat
+  const [myChats, setMyChats] = useState([])           // my_trades rows — badge + Trades tab share ONE fetch
   const [sheetOpen, setSheetOpen] = useState(false) // a bottom sheet is open → hide TabBar
 
   // Auth state
@@ -4608,6 +4643,7 @@ export default function App() {
       supabase.rpc('my_offers'),
     ])
     setMyListings(listings || [])                       // pre-023: tables absent → null → []
+    setMyChats(chats || [])
     setOfferCounts(Object.fromEntries((counts || []).map(c => [c.listing_id, c.pending])))
     // The badge IS the notification — push isn't built, so an offer, a fresh
     // accept, a decline, or a waiting confirmation has no other way to find you.
@@ -4621,7 +4657,7 @@ export default function App() {
   // Keep it honest during a session: re-check on a slow tick and whenever the
   // app regains focus (same signal the SW-update check uses).
   useEffect(() => {
-    const t = setInterval(refreshTrades, 60000)
+    const t = setInterval(() => { if (!document.hidden) refreshTrades() }, 60000)
     const onVis = () => document.visibilityState === 'visible' && refreshTrades()
     document.addEventListener('visibilitychange', onVis)
     return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVis) }
@@ -4651,6 +4687,7 @@ export default function App() {
       const path = `${user.id}/${crypto.randomUUID()}.jpg`
       const { error: upErr } = await supabase.storage.from('matchbooks').upload(path, blob, { contentType: 'image/jpeg', upsert: false })
       if (upErr) throw upErr
+      downscaleImage(file, 480, 0.72).then(t => supabase.storage.from('matchbooks').upload(path + '.t', t, { contentType: 'image/jpeg', upsert: false })).catch(() => {}) // 480px thumb sibling
       const url = supabase.storage.from('matchbooks').getPublicUrl(path).data.publicUrl
       const { error } = await supabase.from('trade_listings').update({ photo_url: url }).eq('id', listing.id)
       if (error) throw error
@@ -4757,6 +4794,7 @@ export default function App() {
       const path = `${user.id}/${crypto.randomUUID()}.jpg`
       const { error: upErr } = await supabase.storage.from('matchbooks').upload(path, blob, { contentType: 'image/jpeg', upsert: false })
       if (upErr) throw upErr
+      downscaleImage(f, 480, 0.72).then(t => supabase.storage.from('matchbooks').upload(path + '.t', t, { contentType: 'image/jpeg', upsert: false })).catch(() => {}) // 480px thumb sibling for lists
       urls.push(supabase.storage.from('matchbooks').getPublicUrl(path).data.publicUrl)
     }
     const merged = [...existing, ...urls]
@@ -4859,6 +4897,9 @@ export default function App() {
   // always safe. Returns an error to surface, or null on success.
   const handleDeleteAccount = async () => {
     try {
+      // Venue covers wearing this user's photos go back to the emoji BEFORE the
+      // files vanish — otherwise a venue's public face 404s forever (027).
+      await supabase.rpc('clear_my_covers').catch(() => {})
       const bucket = supabase.storage.from('matchbooks')
       for (let page = 0; page < 20; page++) { // safety cap ~2000 files
         const { data: files, error: listErr } = await bucket.list(user.id, { limit: 100 })
@@ -4897,8 +4938,13 @@ export default function App() {
   }
 
   // Enrich collection with venue data
-  const venueMap = Object.fromEntries(venues.map(v => [v.id, v]))
-  const enrichedCollection = collection.map(item => ({ ...item, venue: venueMap[item.venue_id] }))
+  // Memoized: App re-renders constantly (badge ticks, sheet state) and these
+  // feed every downstream useMemo — fresh identities defeated the whole chain.
+  const venueMap = useMemo(() => Object.fromEntries(venues.map(v => [v.id, v])), [venues])
+  const enrichedCollection = useMemo(
+    () => collection.map(item => ({ ...item, venue: venueMap[item.venue_id] })),
+    [collection, venueMap]
+  )
   const collectionIds = useMemo(() => collection.map(i => i.venue_id), [collection])
   // Ranked items: collection rows with a score, sorted best-first (passed to Submit + Rankings)
   const rankedItems = useMemo(
@@ -5116,6 +5162,7 @@ export default function App() {
           {tab === 'trades' && (
             <Trades
               user={user}
+              chats={myChats}
               onOffer={setOfferTarget}
               onOpenChat={setOpenChat}
               onSeenOffers={refreshTrades}
