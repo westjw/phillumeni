@@ -138,6 +138,22 @@ and the rating becomes 17+ in some regions; start with No.
 
 ---
 
+## Pre-launch: auth email plumbing (do BEFORE submitting)
+
+1. **Supabase URL config** (2 min, required — reset links point at localhost
+   without it): https://supabase.com/dashboard/project/bsbbfkjgnspfdpxjluna/auth/url-configuration
+   - Site URL: `https://phillumeni.vercel.app`
+   - Redirect URLs: add `https://phillumeni.vercel.app/**`
+2. **Deliverability** (needs a real domain): buy phillumeni.com → Resend
+   account (free) → verify domain via DNS → Supabase → Project Settings →
+   Authentication → SMTP: host `smtp.resend.com`, port 465, user `resend`,
+   pass = Resend API key, sender `hello@phillumeni.com`. Until then the
+   built-in mailer caps at ~2-4 emails/hour and often lands in spam.
+3. Test: Forgot password with a real inbox → link must open
+   phillumeni.vercel.app → set password → sign into the NATIVE app with it.
+
+---
+
 ## Submit checklist (in order)
 
 1. Archive + upload the pending build batch (Xcode: Any iOS Device → Product →
