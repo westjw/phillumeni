@@ -3327,14 +3327,16 @@ function AdminQueue({ reports, venues, closureReports = [], chatReports = [], on
 }
 
 // ─── AUTH SCREENS ────────────────────────────────────────
-function AuthScreen({ onDone }) {
-  const [mode, setMode] = useState('signup') // signup | login | reset
+function AuthScreen({ onDone, initialNotice }) {
+  // A dead reset link lands here — open in LOGIN mode with the explanation,
+  // not on "Create account" (which read as the app forgetting who you are).
+  const [mode, setMode] = useState(initialNotice ? 'login' : 'signup') // signup | login | reset
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
+  const [notice, setNotice] = useState(initialNotice || '')
 
   const handleSubmit = async () => {
     setLoading(true)
@@ -4372,6 +4374,7 @@ export default function App() {
   const [showSubmit, setShowSubmit] = useState(false)
   const [showAuth, setShowAuth] = useState(false)
   const [recoveryMode, setRecoveryMode] = useState(false) // arrived via a password-reset link
+  const [authNotice, setAuthNotice] = useState('')        // e.g. "that reset link expired"
   const [venuesError, setVenuesError] = useState(false)
   const [isAdmin, setIsAdmin] = useState(false)
   const [myAvatar, setMyAvatar] = useState(null)
@@ -4415,6 +4418,32 @@ export default function App() {
     })
 
     return () => subscription.unsubscribe()
+  }, [])
+
+  // Recovery links land with a hash. Three shapes:
+  //  * #token_hash=…&type=recovery — the hardened email template. WE consume the
+  //    token via verifyOtp, so an inbox link-scanner GETting the URL burns
+  //    nothing (scanners were consuming the old one-shot links before the user
+  //    ever tapped — the reset then dumped them on the signup screen, silently).
+  //  * #access_token=… — legacy implicit links; the SDK handles those itself.
+  //  * #error=…&error_code=otp_expired — a dead link. Say so, in login mode,
+  //    instead of pretending nothing happened.
+  useEffect(() => {
+    try {
+      const h = new URLSearchParams((window.location.hash || '').slice(1))
+      const tokenHash = h.get('token_hash')
+      const deadLink = h.get('error_description') || h.get('error_code') || h.get('error')
+      if (tokenHash && h.get('type') === 'recovery') {
+        window.history.replaceState({}, '', window.location.pathname)
+        supabase.auth.verifyOtp({ type: 'recovery', token_hash: tokenHash }).then(({ error }) => {
+          if (error) setAuthNotice('That reset link is invalid or has expired — request a fresh one via “Forgot password?”.')
+          else { setRecoveryMode(true); setShowAuth(false) }
+        })
+      } else if (deadLink) {
+        window.history.replaceState({}, '', window.location.pathname)
+        setAuthNotice('That reset link is invalid or has expired — request a fresh one via “Forgot password?”.')
+      }
+    } catch { /* no URL access — skip */ }
   }, [])
 
   // Capture an inbound invite link (?invite=<user.id>) once, stash it, and clean
@@ -5036,7 +5065,7 @@ export default function App() {
   if (showAuth || !user) {
     return (
       <div style={phoneStyle}>
-        <AuthScreen onDone={() => setShowAuth(false)} />
+        <AuthScreen onDone={() => setShowAuth(false)} initialNotice={authNotice} key={authNotice || 'auth'} />
       </div>
     )
   }
