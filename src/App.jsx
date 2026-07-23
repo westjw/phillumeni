@@ -3342,8 +3342,15 @@ function AuthScreen({ onDone }) {
     setNotice('')
     try {
       if (mode === 'reset') {
-        // Email a recovery link; returning to the app fires PASSWORD_RECOVERY.
-        const redirectTo = (typeof window !== 'undefined' && window.location?.origin) || undefined
+        // Email a recovery link; opening it fires PASSWORD_RECOVERY.
+        // NEVER send the local origin: the native app's origin IS localhost
+        // (Capacitor's shell), so the emailed link pointed at a server that
+        // exists on nobody's phone. Recovery always lands on the public web
+        // app; native users set the new password there and sign in with it.
+        const origin = (typeof window !== 'undefined' && window.location?.origin) || ''
+        const redirectTo = (origin.startsWith('http') && !/^https?:\/\/localhost(:\d+)?$/.test(origin))
+          ? origin
+          : 'https://phillumeni.vercel.app'
         const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
         if (error) throw error
         setNotice('If that email has an account, a reset link is on its way. Open it on this device.')
