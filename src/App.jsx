@@ -3760,14 +3760,18 @@ function Trades({ user, chats, onOffer, onOpenChat, onSeenOffers, onSheetOpenCha
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {tab === 'browse' ? (
           <>
+            {/* City filter as a dropdown — chips didn't scale past a handful of
+                cities, and there are ~120 now. Matches the Rankings City picker. */}
             {cities.length > 0 && (
-              <div style={{ display: 'flex', gap: 7, overflowX: 'auto', padding: '12px 16px 4px' }}>
-                {[{ v: '', l: 'All' }, ...cities.map(c => ({ v: c, l: c }))].map(c => (
-                  <button key={c.v} onClick={() => setCity(c.v)}
-                    style={{ flexShrink: 0, padding: '7px 15px', borderRadius: 99, fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: city === c.v ? 'none' : `1px solid ${C.border}`, background: city === c.v ? C.dark : 'transparent', color: city === c.v ? '#fff' : C.sec }}>
-                    {c.l}
-                  </button>
-                ))}
+              <div style={{ padding: '12px 16px 4px' }}>
+                <div style={{ position: 'relative' }}>
+                  <select value={city} onChange={e => setCity(e.target.value)}
+                    style={{ width: '100%', padding: '11px 14px', border: `1.5px solid ${city ? C.amberBd : C.border}`, borderRadius: 12, background: city ? C.amberBg : C.card, color: city ? C.amber : C.text, fontSize: 14, fontWeight: 700, appearance: 'none', WebkitAppearance: 'none', cursor: 'pointer', outline: 'none' }}>
+                    <option value="">All cities</option>
+                    {cities.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <i className="ti ti-chevron-down" style={{ position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', color: city ? C.amber : C.muted, fontSize: 16, pointerEvents: 'none' }} />
+                </div>
               </div>
             )}
             {rows === null ? (
