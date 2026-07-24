@@ -85,16 +85,14 @@ const retiredLabel = (v) => (v?.status === 'discontinued' ? 'No longer makes mat
 // Dedup-grade name equality: "The Dead Rabbit" == "dead rabbit" == "Déad Rabbit!".
 // Exact-string matching is how Bar Snack nearly tripled — a leading "The", a
 // stray period, or an accent is enough for the same bar to read as a new one.
-// Small-context <img>: tries the 480px thumb sibling ('<key>.t', uploaded
-// alongside every new photo) and falls back to the full 1600px original for
-// legacy uploads. The miss-set stops re-probing thumbs that don't exist.
-const thumbMiss = new Set()
+// Lazy, async-decoded <img> for list/grid thumbnails. It renders the photo
+// directly — an earlier version probed for a '.t' thumbnail sibling and fell
+// back on error, but NO existing photo has one, so every legacy image fired a
+// 400 and (flakily, on mobile Safari) showed broken. A real thumbnail system
+// needs a backfill of the ~hundreds of existing photos first — until then,
+// correct-and-full beats fast-and-broken.
 function Pic({ src, alt = '', style, ...rest }) {
-  const useThumb = src && src.includes('/matchbooks/') && !thumbMiss.has(src)
-  return (
-    <img src={useThumb ? src + '.t' : src} alt={alt} loading="lazy" decoding="async" style={style} {...rest}
-      onError={(e) => { if (useThumb) { thumbMiss.add(src); e.currentTarget.src = src } }} />
-  )
+  return <img src={src} alt={alt} loading="lazy" decoding="async" style={style} {...rest} />
 }
 
 // Two names denote the same venue only when their normalized forms match AND
@@ -463,7 +461,6 @@ function Explore({ venues, collectionIds, reported, onCollect, onFlag, onFakeRep
         const path = `${user.id}/${crypto.randomUUID()}.jpg`
         const { error: upErr } = await supabase.storage.from('matchbooks').upload(path, blob, { contentType: 'image/jpeg', upsert: false })
         if (upErr) throw upErr
-        downscaleImage(f, 480, 0.72).then(t => supabase.storage.from('matchbooks').upload(path + '.t', t, { contentType: 'image/jpeg', upsert: false })).catch(() => {}) // 480px thumb sibling for lists
         urls.push(supabase.storage.from('matchbooks').getPublicUrl(path).data.publicUrl)
       }
       const merged = [...pcPhotos, ...urls]
@@ -1257,7 +1254,6 @@ function Submit({ onBack, onAdded, user, rankedItems = [], collectedMapboxIds = 
           .from('matchbooks')
           .upload(path, upload, { contentType: resized ? 'image/jpeg' : (file.type || 'image/jpeg'), upsert: false })
         if (upErr) throw upErr
-        downscaleImage(file, 480, 0.72).then(t => supabase.storage.from('matchbooks').upload(path + '.t', t, { contentType: 'image/jpeg', upsert: false })).catch(() => {}) // 480px thumb sibling
         const { data } = supabase.storage.from('matchbooks').getPublicUrl(path)
         setPhotos(prev => prev.map(p => (p.id === id ? { ...p, url: data.publicUrl, path, status: 'done' } : p)))
       } catch (err) {
@@ -4723,7 +4719,6 @@ export default function App() {
       const path = `${user.id}/${crypto.randomUUID()}.jpg`
       const { error: upErr } = await supabase.storage.from('matchbooks').upload(path, blob, { contentType: 'image/jpeg', upsert: false })
       if (upErr) throw upErr
-      downscaleImage(file, 480, 0.72).then(t => supabase.storage.from('matchbooks').upload(path + '.t', t, { contentType: 'image/jpeg', upsert: false })).catch(() => {}) // 480px thumb sibling
       const url = supabase.storage.from('matchbooks').getPublicUrl(path).data.publicUrl
       const { error } = await supabase.from('trade_listings').update({ photo_url: url }).eq('id', listing.id)
       if (error) throw error
@@ -4830,7 +4825,6 @@ export default function App() {
       const path = `${user.id}/${crypto.randomUUID()}.jpg`
       const { error: upErr } = await supabase.storage.from('matchbooks').upload(path, blob, { contentType: 'image/jpeg', upsert: false })
       if (upErr) throw upErr
-      downscaleImage(f, 480, 0.72).then(t => supabase.storage.from('matchbooks').upload(path + '.t', t, { contentType: 'image/jpeg', upsert: false })).catch(() => {}) // 480px thumb sibling for lists
       urls.push(supabase.storage.from('matchbooks').getPublicUrl(path).data.publicUrl)
     }
     const merged = [...existing, ...urls]
