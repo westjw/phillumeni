@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import '@tabler/icons-webfont/dist/tabler-icons.min.css'
 import { supabase } from './supabase.js'
+import { initPush, enablePush, pushPermission, unregisterPush, syncPushToken } from './push.js'
 // mapbox-gl (~600KB) is imported lazily inside AppMap so it stays out of the
 // initial bundle and only loads once the map actually mounts.
 
@@ -3685,6 +3686,22 @@ function Trades({ user, chats, onOffer, onOpenChat, onSeenOffers, onSheetOpenCha
   const [city, setCity] = useState('')
   const [withdrawing, setWithdrawing] = useState(null)
 
+  // Push priming (native only): the first time someone opens Trades and hasn't
+  // decided on notifications, encourage them — trades are timely and there's no
+  // other alert. NEVER blocks the feature (App Store 4.5.4): dismiss and it's the
+  // in-app badge, exactly as before. Shown at most once per install.
+  const [prime, setPrime] = useState(false)
+  useEffect(() => {
+    let done = false
+    ;(async () => {
+      if (localStorage.getItem('phillumeni_push_primed')) return
+      const perm = await pushPermission()
+      if (!done && (perm === 'prompt' || perm === 'prompt-with-rationale')) setPrime(true)
+    })()
+    return () => { done = true }
+  }, [])
+  const dismissPrime = () => { try { localStorage.setItem('phillumeni_push_primed', '1') } catch {}; setPrime(false) }
+
   // Fetch ONCE unfiltered; the city filter is client-side. Filtering server-side
   // derived the chips from the filtered set — pick a city and every other chip
   // vanished, including your way back to All.
@@ -3857,6 +3874,23 @@ function Trades({ user, chats, onOffer, onOpenChat, onSeenOffers, onSheetOpenCha
           </div>
         )}
       </div>
+
+      {/* Push priming — encourage, never require. "Not now" = keep the badge. */}
+      {prime && (
+        <div style={{ position: 'absolute', inset: 0, zIndex: 40, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+          <div onClick={dismissPrime} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+          <div style={{ position: 'relative', background: C.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: '10px 20px 24px', textAlign: 'center' }}>
+            <div style={{ width: 36, height: 4, background: C.borderStr, borderRadius: 2, margin: '0 auto 16px' }} />
+            <div style={{ fontSize: 40, marginBottom: 10 }}>🔔</div>
+            <div style={{ fontSize: 21, fontWeight: 800, color: C.text, letterSpacing: '-.4px', marginBottom: 8 }}>Know the moment someone offers</div>
+            <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.6, marginBottom: 20 }}>
+              Trades move fast. Turn on notifications and we'll ping you when someone offers, accepts, or seals a swap — instead of you having to check back.
+            </div>
+            <PrimaryBtn onClick={async () => { await enablePush(); dismissPrime() }} style={{ marginBottom: 8, background: C.amber }}>Turn on notifications</PrimaryBtn>
+            <button onClick={dismissPrime} style={{ width: '100%', padding: 12, background: 'none', border: 'none', color: C.muted, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Not now</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -4416,6 +4450,25 @@ export default function App() {
     return () => subscription.unsubscribe()
   }, [])
 
+  // Push notifications (native iOS only; no-op on web). A tap deep-links into
+  // the trade — its chat if there is one, else the Trades tab. Uses refs so the
+  // one-time listener always sees the latest chat list without re-subscribing.
+  const myChatsRef = useRef([])
+  useEffect(() => { myChatsRef.current = myChats }, [myChats])
+  useEffect(() => {
+    initPush({
+      onOpen: (data) => {
+        setTab('trades')
+        const cid = Number(data?.chat_id)
+        if (cid) {
+          const chat = myChatsRef.current.find(c => c.chat_id === cid)
+          if (chat) setOpenChat(chat)
+          else refreshTrades() // not loaded yet — pull, the Trades tab will show it
+        }
+      },
+    })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Recovery links land with a hash. Three shapes:
   //  * #token_hash=…&type=recovery — the hardened email template. WE consume the
   //    token via verifyOtp, so an inbox link-scanner GETting the URL burns
@@ -4686,6 +4739,9 @@ export default function App() {
     setTradeBadge(pending + waiting + freshAccepts + unseenDeclines)
   }, [user])
   useEffect(() => { refreshTrades() }, [refreshTrades])
+  // Bind this device's push token to whoever just signed in (covers a
+  // logout → different-user login without an app restart). Silent no-op on web.
+  useEffect(() => { if (user) syncPushToken() }, [user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
   // Keep it honest during a session: re-check on a slow tick and whenever the
   // app regains focus (same signal the SW-update check uses).
   useEffect(() => {
@@ -4950,6 +5006,7 @@ export default function App() {
   }
 
   const handleSignOut = async () => {
+    await unregisterPush() // stop this device buzzing for the departing user
     await supabase.auth.signOut()
     setCollection([])
     setReported([])

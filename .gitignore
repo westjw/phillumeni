@@ -4,3 +4,7 @@ dist
 .env.local
 .vercel
 .env*
+
+# APNs auth key — NEVER commit (it's a credential)
+*.p8
+secrets/

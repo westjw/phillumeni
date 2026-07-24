@@ -1,0 +1,8 @@
+# Minimal config for Edge Function deploys. The DB itself is managed via the
+# migrations/ SQL run by hand in the dashboard — this only declares functions.
+project_id = "bsbbfkjgnspfdpxjluna"
+
+[functions.push]
+# The Database Webhook authenticates with a shared secret (x-webhook-secret),
+# not a Supabase JWT, so skip JWT verification for this function.
+verify_jwt = false
